@@ -1,0 +1,24 @@
+{
+    "base_amount": 12666124,
+    "risk_amount": 50000,
+    "rr_ratio": 1.5,
+    "auto_rr_ratio": 2.0,
+    "min_tick_diff": 8,
+    "max_entry_gap_ticks": 50,
+    "gemini_amount": 2000000,
+    "gemini_tp_pct": 1.5,
+    "gemini_sl_pct": 1.0,
+    "gemini_filter_lvl": 1,
+    "nxt_scan_enabled": true,
+    "max_holdings": 20,
+    "custom_watchlist": {
+        "024060": "\ud765\uad6c\uc11d\uc720"
+    },
+    "engine_gem_on": true,
+    "engine_laptop_on": true,
+    "engine_ob_on": true,
+    "engine_bpr_on": true,
+    "time_filter_on": false,
+    "circuit_breaker_on": false,
+    "gemini_api_key": ""
+}

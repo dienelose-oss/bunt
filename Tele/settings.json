@@ -1,0 +1,12 @@
+{
+    "base_amount": 15512996,
+    "risk_amount": 500000,
+    "rr_ratio": 1.5,
+    "min_tick_diff": 3,
+    "max_entry_gap_ticks": 50,
+    "gemini_amount": 500000,
+    "gemini_tp_pct": 1.5,
+    "gemini_sl_pct": 1.0,
+    "nxt_scan_enabled": false,
+    "gemini_api_key": ""
+}

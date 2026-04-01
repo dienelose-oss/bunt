@@ -1,0 +1,111 @@
+{
+    "20260331": {
+        "000660": {
+            "name": "*SK\ud558\uc774\ub2c9\uc2a4",
+            "prpr": 807105,
+            "qty": 22
+        },
+        "0015N0": {
+            "name": "\uc544\ub85c\ub9c8\ud2f0\uce74",
+            "prpr": 9148,
+            "qty": 101
+        },
+        "003280": {
+            "name": "\ud765\uc544\ud574\uc6b4",
+            "prpr": 3970,
+            "qty": 2924
+        },
+        "005380": {
+            "name": "\ud604\ub300\ucc28",
+            "prpr": 444479,
+            "qty": 4
+        },
+        "005930": {
+            "name": "\uc0bc\uc131\uc804\uc790",
+            "prpr": 166816,
+            "qty": 11
+        },
+        "034020": {
+            "name": "\ub450\uc0b0\uc5d0\ub108\ube4c\ub9ac\ud2f0",
+            "prpr": 91090,
+            "qty": 21
+        },
+        "114190": {
+            "name": "\uac15\uc6d0\uc5d0\ub108\uc9c0",
+            "prpr": 15414,
+            "qty": 130
+        },
+        "128820": {
+            "name": "\ub300\uc131\uc0b0\uc5c5",
+            "prpr": 6654,
+            "qty": 296
+        },
+        "131370": {
+            "name": "\uc54c\uc11c\ud3ec\ud2b8",
+            "prpr": 2693,
+            "qty": 680
+        },
+        "475150": {
+            "name": "SK\uc774\ud130\ub2c9\uc2a4",
+            "prpr": 54373,
+            "qty": 32
+        }
+    },
+    "20260401": {
+        "000660": {
+            "name": "*SK\ud558\uc774\ub2c9\uc2a4",
+            "prpr": 894915,
+            "qty": 22
+        },
+        "001510": {
+            "name": "SK\uc99d\uad8c",
+            "prpr": 2155,
+            "qty": 930
+        },
+        "003280": {
+            "name": "\ud765\uc544\ud574\uc6b4",
+            "prpr": 3696,
+            "qty": 2924
+        },
+        "005380": {
+            "name": "\ud604\ub300\ucc28",
+            "prpr": 486387,
+            "qty": 4
+        },
+        "005930": {
+            "name": "\uc0bc\uc131\uc804\uc790",
+            "prpr": 189218,
+            "qty": 11
+        },
+        "100090": {
+            "name": "SK\uc624\uc158\ud50c\ub79c\ud2b8",
+            "prpr": 29282,
+            "qty": 66
+        },
+        "114190": {
+            "name": "\uac15\uc6d0\uc5d0\ub108\uc9c0",
+            "prpr": 14666,
+            "qty": 130
+        },
+        "131370": {
+            "name": "\uc54c\uc11c\ud3ec\ud2b8",
+            "prpr": 2514,
+            "qty": 680
+        },
+        "375500": {
+            "name": "DL\uc774\uc564\uc528",
+            "prpr": 72333,
+            "qty": 38
+        },
+        "394420": {
+            "name": "\ub9ac\uc13c\uc2a4\uba54\ub514\uceec",
+            "prpr": 23895,
+            "qty": 83
+        },
+        "475150": {
+            "name": "SK\uc774\ud130\ub2c9\uc2a4",
+            "prpr": 53974,
+            "qty": 32
+        }
+    }
+}
