@@ -260,6 +260,8 @@ async def main():
     last_scan_time = 0
     last_asset_record_time = 0
     last_auto_chart_time = 0
+    last_holdings_time = 0
+    cached_holdings = {}
     
     last_cleared_hour = None
     last_daily_reset_date = None
@@ -777,7 +779,9 @@ async def main():
 
             is_weekend = (now.weekday() >= 5)
             is_active_day = not is_weekend and not is_paused
-            is_scan_time = (dt_time(9, 0) <= now.time() <= dt_time(15, 30)) and is_active_day
+            
+            scan_end_time = dt_time(20, 0) if user_settings.get('nxt_scan_enabled', False) else dt_time(15, 30)
+            is_scan_time = (dt_time(9, 0) <= now.time() <= scan_end_time) and is_active_day
             
             if is_active_day and now.hour == 15 and now.minute == 20 and last_snapshot_date != today_str:
                 holdings_snap = await kiwoom_api.get_holdings_data(session)
@@ -833,259 +837,231 @@ async def main():
                 
                 if is_3m or is_5m:
                     current_macro_pct = await get_kosdaq_macro_trend(session) 
-                    top_20 = await kiwoom_api.get_top_20_search_rank(session)
+                    search_20 = await kiwoom_api.get_top_20_search_rank(session)
+                    volume_20 = await kiwoom_api.get_top_20_volume_rank(session)
                     
-                    if top_20 is not None:
-                        target_codes = list(top_20.keys())
-                        stock_dict.update(top_20)
-                        watchlist = user_settings.get('custom_watchlist', {})
-                        for wc_code, wc_name in watchlist.items():
-                            if wc_code not in target_codes:
-                                target_codes.append(wc_code)
-                                stock_dict[wc_code] = wc_name
+                    target_candidates = {}
+                    if search_20: target_candidates.update(search_20)
+                    if volume_20: target_candidates.update(volume_20)
+                    
+                    target_codes = list(target_candidates.keys())
+                    stock_dict.update(target_candidates)
+                    
+                    watchlist = user_settings.get('custom_watchlist', {})
+                    for wc_code, wc_name in watchlist.items():
+                        if wc_code not in target_codes:
+                            target_codes.append(wc_code)
+                            stock_dict[wc_code] = wc_name
 
-                        if target_codes:
-                            holdings_check = await kiwoom_api.get_holdings_data(session) or {}
-                            async def fetch_with_sem(code, tf):
-                                async with api_semaphore: return await kiwoom_api.get_candles(session, code, tf)
-                                    
-                            candles_3m_dict = dict(zip(target_codes, await asyncio.gather(*[fetch_with_sem(code, '3') for code in target_codes]))) if is_3m else {}
-                            candles_5m_dict = dict(zip(target_codes, await asyncio.gather(*[fetch_with_sem(code, '5') for code in target_codes]))) if is_5m else {}
+                    if target_codes:
+                        holdings_check = await kiwoom_api.get_holdings_data(session) or {}
+                        async def fetch_with_sem(code, tf):
+                            async with api_semaphore: return await kiwoom_api.get_candles(session, code, tf)
+                                
+                        candles_3m_dict = dict(zip(target_codes, await asyncio.gather(*[fetch_with_sem(code, '3') for code in target_codes]))) if is_3m else {}
+                        candles_5m_dict = dict(zip(target_codes, await asyncio.gather(*[fetch_with_sem(code, '5') for code in target_codes]))) if is_5m else {}
+                        
+                        for code in target_codes:
+                            if code in holdings_check: continue
                             
-                            for code in target_codes:
-                                if code in holdings_check: continue
+                            curr_price_check = None
+                            if is_3m and code in candles_3m_dict and candles_3m_dict[code]:
+                                curr_price_check = abs(int(candles_3m_dict[code][0]['close']))
+                            elif is_5m and code in candles_5m_dict and candles_5m_dict[code]:
+                                curr_price_check = abs(int(candles_5m_dict[code][0]['close']))
+                                
+                            if curr_price_check is not None and curr_price_check < 1000:
+                                continue
+                                
+                            if is_3m and code in candles_3m_dict:
+                                candles_3m = candles_3m_dict[code]
+                                if not candles_3m or not candles_3m[0]['time'].startswith(today_str): continue
+                                
+                                last_engine_scan_time = now.strftime('%H:%M:%S')
+
+                                if allow_gem:
+                                    is_gemini, gemini_data = strategy.check_gemini_momentum_model(
+                                        candles_3m, today_str, 
+                                        tp_pct=user_settings.get('gemini_tp_pct', 1.5), 
+                                        sl_pct=user_settings.get('gemini_sl_pct', 1.0), 
+                                        filter_lvl=user_settings.get('gemini_filter_lvl', 3)
+                                    )
+                                    if is_gemini:
+                                        alert_key = f"{code}_3m_GEMINI_{gemini_data['time']}"
+                                        if alert_key not in alerted_obs:
+                                            alerted_obs.add(alert_key)
+                                            await save_alerted_obs(alerted_obs)
+                                            entry = gemini_data['entry_price']
+                                            qty = user_settings.get('gemini_amount', 500000) // entry
+                                            if qty > 0:
+                                                buy_res, odno = await kiwoom_api.buy_limit_order(session, code, qty, entry)
+                                                if "✅" in buy_res:
+                                                    gemini_data['meta']['macro_pct'] = current_macro_pct 
+                                                    auto_watch_list[code] = {'name': stock_dict[code], 'entry': entry, 'sl': gemini_data['sl_price'], 'tp': gemini_data['dynamic_tp'], 'status': 'pending', 'half_sold': False, 'max_reached': entry, 'odno': odno, 'is_gemini': True, 'meta': gemini_data['meta'], 'entry_time': time.time()}
+                                                    await save_watch_list(redis_client, auto_watch_list, use_redis)
+                                                    msg = f"🤖 [제미나이 자동매수] {stock_dict[code]} {qty}주 완료\n"
+                                                    msg += f"• 매수가: {entry:,}원\n"
+                                                    msg += f"• 목표가: {gemini_data['dynamic_tp']:,}원 (+{user_settings.get('gemini_tp_pct', 1.5)}%)\n"
+                                                    msg += f"• 손절가: {gemini_data['sl_price']:,}원 (-{user_settings.get('gemini_sl_pct', 1.0)}%)\n"
+                                                    msg += f"• 작동 Lv: {user_settings.get('gemini_filter_lvl', 3)}\n"
+                                                    msg += f"• 진단 팩트: {gemini_data['meta'].get('diag_msg', '확인불가')}"
+                                                    await send_tg_message(msg)
+                                        continue 
                                     
-                                if is_3m and code in candles_3m_dict:
-                                    candles_3m = candles_3m_dict[code]
-                                    if not candles_3m or not candles_3m[0]['time'].startswith(today_str): continue
-                                    
-                                    last_engine_scan_time = now.strftime('%H:%M:%S')
+                                if allow_ob:
+                                    is_ob, ob_data = strategy.check_orderblock_engulfing(candles_3m, today_str, user_settings.get('rr_ratio', 1.5))
+                                    if is_ob:
+                                        ob_data['tf'] = '3m'
+                                        ob_data['meta']['macro_pct'] = current_macro_pct 
+                                        alert_key = f"{code}_3m_OB_{ob_data['time']}"
+                                        if alert_key not in alerted_obs:
+                                            alerted_obs.add(alert_key)
+                                            await save_alerted_obs(alerted_obs)
+                                            pending_setups[code] = ob_data
+                                            
+                                            ask_v, bid_v = await kiwoom_api.get_orderbook(session, code)
+                                            opt_entry = strategy.optimize_entry_with_orderbook(ob_data['entry_price'], ask_v, bid_v)
+                                            rt_price_check = abs(int(candles_3m[0]['close']))
+                                            
+                                            if strategy.count_exact_ticks(rt_price_check, opt_entry) <= user_settings.get('max_entry_gap_ticks', 50) and strategy.count_exact_ticks(ob_data['sl_price'], opt_entry) >= user_settings.get('min_tick_diff', 3):
+                                                msg = f"🔥 [수동 스윙: OB] (3분봉)\n• 종목: {stock_dict[code]}\n• 현재가: {rt_price_check:,}원\n• 매수가: {opt_entry:,}원\n• 손절가: {ob_data['sl_price']:,}원\n• 목표가: {ob_data['dynamic_tp']:,}원\n*(진입 승인 대기)*"
+                                                reply_markup = {"inline_keyboard": [[{"text": f"⚡ 수동 타점 확인", "callback_data": f"obcalc_{code}_3_{opt_entry}_{ob_data['sl_price']}_{ob_data['dynamic_tp']}_OB"}]]}
+                                                await send_tg_message(msg, reply_markup=reply_markup)
 
-                                    if allow_gem:
-                                        is_gemini, gemini_data = strategy.check_gemini_momentum_model(
-                                            candles_3m, today_str, 
-                                            tp_pct=user_settings.get('gemini_tp_pct', 1.5), 
-                                            sl_pct=user_settings.get('gemini_sl_pct', 1.0), 
-                                            filter_lvl=user_settings.get('gemini_filter_lvl', 3)
-                                        )
-                                        if is_gemini:
-                                            alert_key = f"{code}_3m_GEMINI_{gemini_data['time']}"
-                                            if alert_key not in alerted_obs:
-                                                alerted_obs.add(alert_key)
-                                                await save_alerted_obs(alerted_obs)
-                                                entry = gemini_data['entry_price']
-                                                qty = user_settings.get('gemini_amount', 500000) // entry
-                                                if qty > 0:
-                                                    buy_res, odno = await kiwoom_api.buy_limit_order(session, code, qty, entry)
-                                                    if "✅" in buy_res:
-                                                        gemini_data['meta']['macro_pct'] = current_macro_pct 
-                                                        auto_watch_list[code] = {'name': stock_dict[code], 'entry': entry, 'sl': gemini_data['sl_price'], 'tp': gemini_data['dynamic_tp'], 'status': 'pending', 'half_sold': False, 'max_reached': entry, 'odno': odno, 'is_gemini': True, 'meta': gemini_data['meta'], 'entry_time': time.time()}
-                                                        await save_watch_list(redis_client, auto_watch_list, use_redis)
-                                                        msg = f"🤖 [제미나이 자동매수] {stock_dict[code]} {qty}주 완료\n"
-                                                        msg += f"• 매수가: {entry:,}원\n"
-                                                        msg += f"• 목표가: {gemini_data['dynamic_tp']:,}원 (+{user_settings.get('gemini_tp_pct', 1.5)}%)\n"
-                                                        msg += f"• 손절가: {gemini_data['sl_price']:,}원 (-{user_settings.get('gemini_sl_pct', 1.0)}%)\n"
-                                                        msg += f"• 작동 Lv: {user_settings.get('gemini_filter_lvl', 3)}\n"
-                                                        msg += f"• 진단 팩트: {gemini_data['meta'].get('diag_msg', '확인불가')}"
-                                                        await send_tg_message(msg)
-                                            continue 
-                                        
-                                    if allow_ob:
-                                        is_ob, ob_data = strategy.check_orderblock_engulfing(candles_3m, today_str, user_settings.get('rr_ratio', 1.5))
-                                        if is_ob:
-                                            ob_data['tf'] = '3m'
-                                            ob_data['meta']['macro_pct'] = current_macro_pct 
-                                            alert_key = f"{code}_3m_OB_{ob_data['time']}"
-                                            if alert_key not in alerted_obs:
-                                                alerted_obs.add(alert_key)
-                                                await save_alerted_obs(alerted_obs)
-                                                pending_setups[code] = ob_data
-                                                
-                                                ask_v, bid_v = await kiwoom_api.get_orderbook(session, code)
-                                                opt_entry = strategy.optimize_entry_with_orderbook(ob_data['entry_price'], ask_v, bid_v)
-                                                rt_price = abs(int(candles_3m[0]['close']))
-                                                
-                                                if strategy.count_exact_ticks(rt_price, opt_entry) <= user_settings.get('max_entry_gap_ticks', 50) and strategy.count_exact_ticks(ob_data['sl_price'], opt_entry) >= user_settings.get('min_tick_diff', 3):
-                                                    msg = f"🔥 [수동 스윙: OB] (3분봉)\n• 종목: {stock_dict[code]}\n• 현재가: {rt_price:,}원\n• 매수가: {opt_entry:,}원\n• 손절가: {ob_data['sl_price']:,}원\n• 목표가: {ob_data['dynamic_tp']:,}원\n*(진입 승인 대기)*"
-                                                    reply_markup = {"inline_keyboard": [[{"text": f"⚡ 수동 타점 확인", "callback_data": f"obcalc_{code}_3_{opt_entry}_{ob_data['sl_price']}_{ob_data['dynamic_tp']}_OB"}]]}
-                                                    await send_tg_message(msg, reply_markup=reply_markup)
+                            if is_5m and code in candles_5m_dict:
+                                candles_5m = candles_5m_dict[code]
+                                if not candles_5m or not candles_5m[0]['time'].startswith(today_str): continue
 
-                                if is_5m and code in candles_5m_dict:
-                                    candles_5m = candles_5m_dict[code]
-                                    if not candles_5m or not candles_5m[0]['time'].startswith(today_str): continue
+                                last_engine_scan_time = now.strftime('%H:%M:%S')
 
-                                    last_engine_scan_time = now.strftime('%H:%M:%S')
+                                if allow_lap:
+                                    is_lap, lap_data = strategy.check_laptop_swing_model(candles_5m, today_str, user_settings['risk_amount'], user_settings.get('auto_rr_ratio', 2.0))
+                                    if is_lap:
+                                        alert_key = f"{code}_5m_LAPTOP_{lap_data['time']}"
+                                        if alert_key not in alerted_obs:
+                                            alerted_obs.add(alert_key)
+                                            await save_alerted_obs(alerted_obs)
+                                            entry = lap_data['entry_price']
+                                            qty = lap_data['qty'] 
+                                            if qty > 0:
+                                                buy_res, odno = await kiwoom_api.buy_limit_order(session, code, qty, entry)
+                                                if "✅" in buy_res:
+                                                    lap_data['meta']['macro_pct'] = current_macro_pct 
+                                                    auto_watch_list[code] = {'name': stock_dict[code], 'entry': entry, 'sl': lap_data['sl_price'], 'tp': lap_data['dynamic_tp'], 'status': 'pending', 'half_sold': False, 'max_reached': entry, 'odno': odno, 'is_laptop': True, 'meta': lap_data['meta'], 'entry_time': time.time()}
+                                                    await save_watch_list(redis_client, auto_watch_list, use_redis)
+                                                    await send_tg_message(f"💻 [랩탑 자동매수] {stock_dict[code]} {qty}주 완료 (리스크 동일화 적용)")
+                                        continue
 
-                                    if allow_lap:
-                                        is_lap, lap_data = strategy.check_laptop_swing_model(candles_5m, today_str, user_settings['risk_amount'], user_settings.get('auto_rr_ratio', 2.0))
-                                        if is_lap:
-                                            alert_key = f"{code}_5m_LAPTOP_{lap_data['time']}"
-                                            if alert_key not in alerted_obs:
-                                                alerted_obs.add(alert_key)
-                                                await save_alerted_obs(alerted_obs)
-                                                entry = lap_data['entry_price']
-                                                qty = lap_data['qty'] 
-                                                if qty > 0:
-                                                    buy_res, odno = await kiwoom_api.buy_limit_order(session, code, qty, entry)
-                                                    if "✅" in buy_res:
-                                                        lap_data['meta']['macro_pct'] = current_macro_pct 
-                                                        auto_watch_list[code] = {'name': stock_dict[code], 'entry': entry, 'sl': lap_data['sl_price'], 'tp': lap_data['dynamic_tp'], 'status': 'pending', 'half_sold': False, 'max_reached': entry, 'odno': odno, 'is_laptop': True, 'meta': lap_data['meta'], 'entry_time': time.time()}
-                                                        await save_watch_list(redis_client, auto_watch_list, use_redis)
-                                                        await send_tg_message(f"💻 [랩탑 자동매수] {stock_dict[code]} {qty}주 완료 (리스크 동일화 적용)")
-                                            continue
+                                if allow_bpr:
+                                    is_bpr, bpr_data = strategy.check_bpr_ifvg_model(candles_5m, today_str, user_settings.get('rr_ratio', 1.5))
+                                    if is_bpr:
+                                        bpr_data['tf'] = '5m'
+                                        bpr_data['meta']['macro_pct'] = current_macro_pct 
+                                        alert_key = f"{code}_5m_BPR_{bpr_data['time']}"
+                                        if alert_key not in alerted_obs:
+                                            alerted_obs.add(alert_key)
+                                            await save_alerted_obs(alerted_obs)
+                                            pending_setups[code] = bpr_data
+                                            
+                                            ask_v, bid_v = await kiwoom_api.get_orderbook(session, code)
+                                            opt_entry = strategy.optimize_entry_with_orderbook(bpr_data['entry_price'], ask_v, bid_v)
+                                            rt_price_check = abs(int(candles_5m[0]['close']))
+                                            
+                                            if strategy.count_exact_ticks(rt_price_check, opt_entry) <= user_settings.get('max_entry_gap_ticks', 50) and strategy.count_exact_ticks(bpr_data['sl_price'], opt_entry) >= user_settings.get('min_tick_diff', 3):
+                                                msg = f"🔥 [수동 스윙: BPR] (5분봉)\n• 종목: {stock_dict[code]}\n• 현재가: {rt_price_check:,}원\n• 매수가: {opt_entry:,}원\n• 손절가: {bpr_data['sl_price']:,}원\n• 목표가: {bpr_data['dynamic_tp']:,}원\n*(진입 승인 대기)*"
+                                                reply_markup = {"inline_keyboard": [[{"text": f"⚡ 수동 타점 확인", "callback_data": f"obcalc_{code}_5_{opt_entry}_{bpr_data['sl_price']}_{bpr_data['dynamic_tp']}_BPR"}]]}
+                                                await send_tg_message(msg, reply_markup=reply_markup)
+                                        continue
 
-                                    if allow_bpr:
-                                        is_bpr, bpr_data = strategy.check_bpr_ifvg_model(candles_5m, today_str, user_settings.get('rr_ratio', 1.5))
-                                        if is_bpr:
-                                            bpr_data['tf'] = '5m'
-                                            bpr_data['meta']['macro_pct'] = current_macro_pct 
-                                            alert_key = f"{code}_5m_BPR_{bpr_data['time']}"
-                                            if alert_key not in alerted_obs:
-                                                alerted_obs.add(alert_key)
-                                                await save_alerted_obs(alerted_obs)
-                                                pending_setups[code] = bpr_data
-                                                
-                                                ask_v, bid_v = await kiwoom_api.get_orderbook(session, code)
-                                                opt_entry = strategy.optimize_entry_with_orderbook(bpr_data['entry_price'], ask_v, bid_v)
-                                                rt_price = abs(int(candles_5m[0]['close']))
-                                                
-                                                if strategy.count_exact_ticks(rt_price, opt_entry) <= user_settings.get('max_entry_gap_ticks', 50) and strategy.count_exact_ticks(bpr_data['sl_price'], opt_entry) >= user_settings.get('min_tick_diff', 3):
-                                                    msg = f"🔥 [수동 스윙: BPR] (5분봉)\n• 종목: {stock_dict[code]}\n• 현재가: {rt_price:,}원\n• 매수가: {opt_entry:,}원\n• 손절가: {bpr_data['sl_price']:,}원\n• 목표가: {bpr_data['dynamic_tp']:,}원\n*(진입 승인 대기)*"
-                                                    reply_markup = {"inline_keyboard": [[{"text": f"⚡ 수동 타점 확인", "callback_data": f"obcalc_{code}_5_{opt_entry}_{bpr_data['sl_price']}_{bpr_data['dynamic_tp']}_BPR"}]]}
-                                                    await send_tg_message(msg, reply_markup=reply_markup)
-                                            continue
-
-                                    if allow_ob:
-                                        is_ob, ob_data = strategy.check_orderblock_engulfing(candles_5m, today_str, user_settings.get('rr_ratio', 1.5))
-                                        if is_ob:
-                                            ob_data['tf'] = '5m'
-                                            ob_data['meta']['macro_pct'] = current_macro_pct 
-                                            alert_key = f"{code}_5m_OB_{ob_data['time']}"
-                                            if alert_key not in alerted_obs:
-                                                alerted_obs.add(alert_key)
-                                                await save_alerted_obs(alerted_obs)
-                                                pending_setups[code] = ob_data
-                                                
-                                                ask_v, bid_v = await kiwoom_api.get_orderbook(session, code)
-                                                opt_entry = strategy.optimize_entry_with_orderbook(ob_data['entry_price'], ask_v, bid_v)
-                                                rt_price = abs(int(candles_5m[0]['close']))
-                                                
-                                                if strategy.count_exact_ticks(rt_price, opt_entry) <= user_settings.get('max_entry_gap_ticks', 50) and strategy.count_exact_ticks(ob_data['sl_price'], opt_entry) >= user_settings.get('min_tick_diff', 3):
-                                                    msg = f"🔥 [수동 스윙: OB] (5분봉)\n• 종목: {stock_dict[code]}\n• 현재가: {rt_price:,}원\n• 매수가: {opt_entry:,}원\n• 손절가: {ob_data['sl_price']:,}원\n• 목표가: {ob_data['dynamic_tp']:,}원\n*(진입 승인 대기)*"
-                                                    reply_markup = {"inline_keyboard": [[{"text": f"⚡ 수동 타점 확인", "callback_data": f"obcalc_{code}_5_{opt_entry}_{ob_data['sl_price']}_{ob_data['dynamic_tp']}_OB"}]]}
-                                                    await send_tg_message(msg, reply_markup=reply_markup)
+                                if allow_ob:
+                                    is_ob, ob_data = strategy.check_orderblock_engulfing(candles_5m, today_str, user_settings.get('rr_ratio', 1.5))
+                                    if is_ob:
+                                        ob_data['tf'] = '5m'
+                                        ob_data['meta']['macro_pct'] = current_macro_pct 
+                                        alert_key = f"{code}_5m_OB_{ob_data['time']}"
+                                        if alert_key not in alerted_obs:
+                                            alerted_obs.add(alert_key)
+                                            await save_alerted_obs(alerted_obs)
+                                            pending_setups[code] = ob_data
+                                            
+                                            ask_v, bid_v = await kiwoom_api.get_orderbook(session, code)
+                                            opt_entry = strategy.optimize_entry_with_orderbook(ob_data['entry_price'], ask_v, bid_v)
+                                            rt_price_check = abs(int(candles_5m[0]['close']))
+                                            
+                                            if strategy.count_exact_ticks(rt_price_check, opt_entry) <= user_settings.get('max_entry_gap_ticks', 50) and strategy.count_exact_ticks(ob_data['sl_price'], opt_entry) >= user_settings.get('min_tick_diff', 3):
+                                                msg = f"🔥 [수동 스윙: OB] (5분봉)\n• 종목: {stock_dict[code]}\n• 현재가: {rt_price_check:,}원\n• 매수가: {opt_entry:,}원\n• 손절가: {ob_data['sl_price']:,}원\n• 목표가: {ob_data['dynamic_tp']:,}원\n*(진입 승인 대기)*"
+                                                reply_markup = {"inline_keyboard": [[{"text": f"⚡ 수동 타점 확인", "callback_data": f"obcalc_{code}_5_{opt_entry}_{ob_data['sl_price']}_{ob_data['dynamic_tp']}_OB"}]]}
+                                                await send_tg_message(msg, reply_markup=reply_markup)
                 last_scan_time = time.time()
 
             if is_active_day and auto_watch_list and (current_timestamp - last_monitor_time >= 1):
-                holdings = await kiwoom_api.get_holdings_data(session)
+                if current_timestamp - last_holdings_time >= 3:
+                    fetched_holdings = await kiwoom_api.get_holdings_data(session)
+                    if fetched_holdings is not None:
+                        cached_holdings = fetched_holdings
+                    last_holdings_time = current_timestamp
+
                 state_changed = False
                 
-                if holdings is not None:
-                    for code, cond in list(auto_watch_list.items()):
-                        if code in holdings:
-                            rt_price = abs(int(holdings[code]['prpr']))
-                            stock_name = holdings[code]['name']
-                            held_qty = holdings[code]['qty']
-                            
-                            if cond['status'] == 'pending':
-                                cond['status'] = 'active'
-                                cond['name'] = stock_name
-                                state_changed = True
-                                await send_tg_message(f"🟢 [{stock_name}] 잔고 편입. 실시간 감시 시작.")
+                async def fetch_rt(code):
+                    async with api_semaphore: return await kiwoom_api.get_candles(session, code, '1')
+                realtime_candles = await asyncio.gather(*[fetch_rt(c) for c in auto_watch_list.keys()])
+                
+                for (code, cond), candles in zip(list(auto_watch_list.items()), realtime_candles):
+                    if not candles: continue
+                    rt_price = abs(int(candles[0]['close']))
+                    
+                    if code in cached_holdings:
+                        stock_name = cached_holdings[code]['name']
+                        held_qty = cached_holdings[code]['qty']
+                        
+                        if cond['status'] == 'pending':
+                            cond['status'] = 'active'
+                            cond['name'] = stock_name
+                            state_changed = True
+                            await send_tg_message(f"🟢 [{stock_name}] 잔고 편입. 실시간 감시 시작.")
 
-                            max_reached = cond.get('max_reached', cond['entry'])
-                            if rt_price > max_reached: cond['max_reached'] = rt_price
+                        max_reached = cond.get('max_reached', cond['entry'])
+                        if rt_price > max_reached: cond['max_reached'] = rt_price
 
-                            if not cond.get('half_sold', False) and not cond.get('be_triggered', False):
-                                is_trigger = False
-                                if cond.get('is_gemini') and rt_price >= (cond['entry'] * 1.01): is_trigger = True
-                                elif (cond.get('is_ob_swing') or cond.get('is_laptop')) and cond['tp'] > 0 and rt_price >= (cond['entry'] + (cond['tp'] - cond['entry'])/2): is_trigger = True
-                                
-                                if is_trigger:
-                                    be_sl = strategy.ceil_to_tick(cond['entry'] * 1.003) 
-                                    if be_sl > cond['sl']:
-                                        cond['sl'] = be_sl
-                                        cond['be_triggered'] = True
-                                        state_changed = True
+                        if not cond.get('half_sold', False) and not cond.get('be_triggered', False):
+                            is_trigger = False
+                            if cond.get('is_gemini') and rt_price >= (cond['entry'] * 1.01): is_trigger = True
+                            elif (cond.get('is_ob_swing') or cond.get('is_laptop')) and cond['tp'] > 0 and rt_price >= (cond['entry'] + (cond['tp'] - cond['entry'])/2): is_trigger = True
                             
-                            if cond['tp'] > 0 and rt_price >= cond['tp']:
-                                if not cond.get('half_sold', False):
-                                    sell_qty = held_qty // 2
-                                    if sell_qty == 0: sell_qty = held_qty
-                                        
-                                    sell_res = await kiwoom_api.sell_market_order(session, code, sell_qty)
-                                    if "✅" not in sell_res: sell_res = await kiwoom_api.sell_limit_order(session, code, sell_qty, rt_price)
-                                    await send_tg_message(f"🚀 [{stock_name}] 타겟 도달! 익절결과: {sell_res}")
-                                    
-                                    if "✅" in sell_res:
-                                        pnl_pct = round(((rt_price - cond['entry']) / cond['entry']) * 100, 2)
-                                        daily_realized_pnl += (rt_price - cond['entry']) * sell_qty
-                                        hold_sec = int(time.time() - cond.get('entry_time', time.time()))
-                                        mfe_pct = round(((cond['max_reached'] - cond['entry']) / cond['entry']) * 100, 2)
-                                        meta = cond.get('meta', {})
-                                        
-                                        if held_qty - sell_qty > 0:
-                                            new_sl = strategy.ceil_to_tick(cond['entry'] * 1.01)
-                                            cond.update({'sl': new_sl, 'tp': 0, 'half_sold': True})
-                                            state_changed = True
-                                            await send_tg_message(f"🛡️ [무한 트레일링] 잔여 물량 추적 시작 (최소보장: {new_sl:,}원)")
-                                            reason = "반익절(TP)"
-                                        else:
-                                            del auto_watch_list[code]
-                                            state_changed = True
-                                            reason = "전량익절(TP)"
-                                            
-                                        if cond.get('is_gemini'):
-                                            headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'UpperTailRatio', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                            row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), meta.get('upper_tail_ratio', 0), meta.get('macro_pct', 0.0), hold_sec, mfe_pct, reason]
-                                            await asyncio.to_thread(write_trade_log, 'gemini_log.csv', headers, row)
-                                        elif cond.get('is_laptop'):
-                                            headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'Dummy', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                            row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, mfe_pct, reason]
-                                            await asyncio.to_thread(write_trade_log, 'laptop_log.csv', headers, row)
-                                        elif cond.get('is_ob_swing'):
-                                            headers = ['Date', 'Code', 'Name', 'Timeframe', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolRatio', 'InitialRR', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                            row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('tf', '5m'), cond['entry'], rt_price, pnl_pct, meta.get('vol_ratio', 0), meta.get('actual_rr', 0), meta.get('macro_pct', 0.0), hold_sec, mfe_pct, reason]
-                                            await asyncio.to_thread(write_trade_log, 'ob_log.csv', headers, row)
-                                    else:
-                                        if "20" in sell_res or "부족" in sell_res:
-                                            await send_tg_message(f"⚠️ [{stock_name}] 수량 부족/미체결 묶임(에러 20) 팩트 확인. 봇 감시를 강제 종료합니다. (HTS/MTS 수동 확인 요망)")
-                                            del auto_watch_list[code]
-                                        else:
-                                            cond['tp'] = 0 
-                                            await send_tg_message(f"⚠️ [{stock_name}] 통신 에러 누적 방지. 수동 대응 바랍니다.")
-                                        state_changed = True
-                            
-                            elif cond.get('half_sold', False) and cond['tp'] == 0:
-                                trail_gap = (cond['entry'] * 0.015) 
-                                new_sl = max(cond['sl'], strategy.floor_to_tick(cond['max_reached'] - trail_gap))
-                                if new_sl > cond['sl']:
-                                    cond['sl'] = new_sl
+                            if is_trigger:
+                                be_sl = strategy.ceil_to_tick(cond['entry'] * 1.003) 
+                                if be_sl > cond['sl']:
+                                    cond['sl'] = be_sl
+                                    cond['be_triggered'] = True
                                     state_changed = True
-
-                            if cond['sl'] > 0 and rt_price <= cond['sl']:
-                                reason_msg = "손절선"
-                                if cond.get('half_sold'): reason_msg = "트레일링 방어선"
-                                elif cond.get('be_triggered'): reason_msg = "본절 방어선"
+                        
+                        if cond['tp'] > 0 and rt_price >= cond['tp']:
+                            if not cond.get('half_sold', False):
+                                sell_qty = held_qty // 2
+                                if sell_qty == 0: sell_qty = held_qty
+                                    
+                                sell_res = await kiwoom_api.sell_market_order(session, code, sell_qty)
+                                if "✅" not in sell_res: sell_res = await kiwoom_api.sell_limit_order(session, code, sell_qty, rt_price)
+                                await send_tg_message(f"🚀 [{stock_name}] 타겟 도달! 익절결과: {sell_res}")
                                 
-                                await send_tg_message(f"🔴 [{stock_name}] {reason_msg} 이탈! 청산 시도 (시장가)...")
-                                sell_res = await kiwoom_api.sell_market_order(session, code, held_qty)
-                                
-                                if "✅" not in sell_res:
-                                    await send_tg_message(f"⚠️ 시장가 거부됨. 플랜 B(지정가 {rt_price:,}원) 즉시 투매 시작.")
-                                    sell_res = await kiwoom_api.sell_limit_order(session, code, held_qty, rt_price)
-
                                 if "✅" in sell_res:
-                                    await send_tg_message(f"🚩 [{stock_name}] 강제 청산 완료. 결과: {sell_res}")
                                     pnl_pct = round(((rt_price - cond['entry']) / cond['entry']) * 100, 2)
-                                    daily_realized_pnl += (rt_price - cond['entry']) * held_qty
+                                    daily_realized_pnl += (rt_price - cond['entry']) * sell_qty
                                     hold_sec = int(time.time() - cond.get('entry_time', time.time()))
                                     mfe_pct = round(((cond['max_reached'] - cond['entry']) / cond['entry']) * 100, 2)
                                     meta = cond.get('meta', {})
                                     
-                                    if cond.get('half_sold'): reason = "무한트레일링"
-                                    elif cond.get('be_triggered'): reason = "본절(B/E)"
-                                    else: reason = "손절(SL)"
+                                    if held_qty - sell_qty > 0:
+                                        new_sl = strategy.ceil_to_tick(cond['entry'] * 1.01)
+                                        cond.update({'sl': new_sl, 'tp': 0, 'half_sold': True})
+                                        state_changed = True
+                                        await send_tg_message(f"🛡️ [무한 트레일링] 잔여 물량 추적 시작 (최소보장: {new_sl:,}원)")
+                                        reason = "반익절(TP)"
+                                    else:
+                                        del auto_watch_list[code]
+                                        state_changed = True
+                                        reason = "전량익절(TP)"
                                         
                                     if cond.get('is_gemini'):
                                         headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'UpperTailRatio', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
@@ -1099,19 +1075,71 @@ async def main():
                                         headers = ['Date', 'Code', 'Name', 'Timeframe', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolRatio', 'InitialRR', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
                                         row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('tf', '5m'), cond['entry'], rt_price, pnl_pct, meta.get('vol_ratio', 0), meta.get('actual_rr', 0), meta.get('macro_pct', 0.0), hold_sec, mfe_pct, reason]
                                         await asyncio.to_thread(write_trade_log, 'ob_log.csv', headers, row)
-                                        
-                                    del auto_watch_list[code]
-                                    state_changed = True
                                 else:
-                                    await send_tg_message(f"❌ [{stock_name}] 최종 매도 실패. 좀비 부활 방지를 위해 감시 목록에서 즉시 도려냅니다.\n• 사유: {sell_res}")
-                                    del auto_watch_list[code]
+                                    if "20" in sell_res or "부족" in sell_res:
+                                        await send_tg_message(f"⚠️ [{stock_name}] 수량 부족/미체결 묶임(에러 20) 팩트 확인. 봇 감시를 강제 종료합니다. (HTS/MTS 수동 확인 요망)")
+                                        del auto_watch_list[code]
+                                    else:
+                                        cond['tp'] = 0 
+                                        await send_tg_message(f"⚠️ [{stock_name}] 통신 에러 누적 방지. 수동 대응 바랍니다.")
                                     state_changed = True
-                        else:
-                            if cond['status'] == 'active':
-                                await send_tg_message(f"👋 [{cond.get('name', code)}] 수동 청산 감지. 감시 종료.")
+                        
+                        elif cond.get('half_sold', False) and cond['tp'] == 0:
+                            trail_gap = (cond['entry'] * 0.015) 
+                            new_sl = max(cond['sl'], strategy.floor_to_tick(cond['max_reached'] - trail_gap))
+                            if new_sl > cond['sl']:
+                                cond['sl'] = new_sl
+                                state_changed = True
+
+                        if cond['sl'] > 0 and rt_price <= cond['sl']:
+                            reason_msg = "손절선"
+                            if cond.get('half_sold'): reason_msg = "트레일링 방어선"
+                            elif cond.get('be_triggered'): reason_msg = "본절 방어선"
+                            
+                            await send_tg_message(f"🔴 [{stock_name}] {reason_msg} 이탈! 청산 시도 (시장가)...")
+                            sell_res = await kiwoom_api.sell_market_order(session, code, held_qty)
+                            
+                            if "✅" not in sell_res:
+                                await send_tg_message(f"⚠️ 시장가 거부됨. 플랜 B(지정가 {rt_price:,}원) 즉시 투매 시작.")
+                                sell_res = await kiwoom_api.sell_limit_order(session, code, held_qty, rt_price)
+
+                            if "✅" in sell_res:
+                                await send_tg_message(f"🚩 [{stock_name}] 강제 청산 완료. 결과: {sell_res}")
+                                pnl_pct = round(((rt_price - cond['entry']) / cond['entry']) * 100, 2)
+                                daily_realized_pnl += (rt_price - cond['entry']) * held_qty
+                                hold_sec = int(time.time() - cond.get('entry_time', time.time()))
+                                mfe_pct = round(((cond['max_reached'] - cond['entry']) / cond['entry']) * 100, 2)
+                                meta = cond.get('meta', {})
+                                
+                                if cond.get('half_sold'): reason = "무한트레일링"
+                                elif cond.get('be_triggered'): reason = "본절(B/E)"
+                                else: reason = "손절(SL)"
+                                    
+                                if cond.get('is_gemini'):
+                                    headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'UpperTailRatio', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
+                                    row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), meta.get('upper_tail_ratio', 0), meta.get('macro_pct', 0.0), hold_sec, mfe_pct, reason]
+                                    await asyncio.to_thread(write_trade_log, 'gemini_log.csv', headers, row)
+                                elif cond.get('is_laptop'):
+                                    headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'Dummy', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
+                                    row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, mfe_pct, reason]
+                                    await asyncio.to_thread(write_trade_log, 'laptop_log.csv', headers, row)
+                                elif cond.get('is_ob_swing'):
+                                    headers = ['Date', 'Code', 'Name', 'Timeframe', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolRatio', 'InitialRR', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
+                                    row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('tf', '5m'), cond['entry'], rt_price, pnl_pct, meta.get('vol_ratio', 0), meta.get('actual_rr', 0), meta.get('macro_pct', 0.0), hold_sec, mfe_pct, reason]
+                                    await asyncio.to_thread(write_trade_log, 'ob_log.csv', headers, row)
+                                    
                                 del auto_watch_list[code]
                                 state_changed = True
-                                
+                            else:
+                                await send_tg_message(f"❌ [{stock_name}] 최종 매도 실패. 좀비 부활 방지를 위해 감시 목록에서 즉시 도려냅니다.\n• 사유: {sell_res}")
+                                del auto_watch_list[code]
+                                state_changed = True
+                    else:
+                        if cond['status'] == 'active':
+                            await send_tg_message(f"👋 [{cond.get('name', code)}] 수동 청산 감지. 감시 종료.")
+                            del auto_watch_list[code]
+                            state_changed = True
+                            
                 if state_changed: await save_watch_list(redis_client, auto_watch_list, use_redis)
                 
                 if user_settings.get('circuit_breaker_on', False):
@@ -1122,7 +1150,7 @@ async def main():
 
                 last_monitor_time = time.time()
             
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
 
 if __name__ == '__main__':
     asyncio.run(main())

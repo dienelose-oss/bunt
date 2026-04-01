@@ -201,7 +201,20 @@ async def get_top_20_search_rank(session):
     for stk in res.get('item_inq_rank', [])[:20]:
         code = stk.get('stk_cd', '')
         if code:
-            result[code] = stk.get('stk_nm', '')
+            result[code] = stk.get('stk_nm', '').strip()
+            
+    return result
+
+async def get_top_20_volume_rank(session):
+    res, _ = await _request_api(session, '/api/dostk/stkinfo', 'ka00216', {'qry_tp': '1', 'dmst_stex_tp': 'AUTO'})
+    if not res: 
+        return {}
+        
+    result = {}
+    for stk in res.get('trde_qty_rank', [])[:20]:
+        code = stk.get('stk_cd', '')
+        if code:
+            result[code] = stk.get('stk_nm', '').strip()
             
     return result
 
@@ -214,9 +227,8 @@ async def get_candles(session, stock_code, tic_scope):
     }
     res, _ = await _request_api(session, '/api/dostk/chart', 'ka10080', params)
     if not res: 
-        return "", []
+        return []
 
-    name = res.get('stk_nm', '').strip()
     parsed = []
     for c in res.get('stk_min_pole_chart_qry', []):
         try: 
