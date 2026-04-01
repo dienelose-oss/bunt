@@ -1,11 +1,18 @@
 import time
 import aiohttp
+import asyncio
+import json
 from datetime import datetime, time as dt_time
 from config import host_url
 from login import fn_au10001 as get_token
 
 _CACHED_TOKEN = None
 _TOKEN_EXPIRY = 0
+
+# --- 웹소켓 전용 전역 변수 ---
+realtime_prices = {}
+ws_client = None
+_ws_approval_key = None
 
 def get_valid_token():
     global _CACHED_TOKEN, _TOKEN_EXPIRY
@@ -44,6 +51,84 @@ async def _request_api(session, endpoint, api_id, params, use_get=False):
     except Exception as e:
         print(f"API 통신 오류 [{api_id}]: {e}")
         return None, exchange_tp
+
+# --- 실시간 웹소켓(WebSocket) 매니저 클래스 ---
+async def init_websocket_keys(session):
+    global _ws_approval_key
+    try:
+        import config
+        app_key = getattr(config, 'app_key', getattr(config, 'APP_KEY', ''))
+        app_secret = getattr(config, 'app_secret', getattr(config, 'APP_SECRET', ''))
+        h_url = getattr(config, 'host_url', getattr(config, 'HOST_URL', ''))
+        
+        url = h_url + '/oauth2/Approval'
+        data = {"grant_type": "client_credentials", "appkey": app_key, "secretkey": app_secret}
+        async with session.post(url, json=data) as res:
+            rj = await res.json()
+            _ws_approval_key = rj.get('approval_key')
+    except Exception as e:
+        print(f"웹소켓 키 초기화 실패 (config.py 확인 요망): {e}")
+
+class KISWebSocket:
+    def __init__(self, session):
+        self.session = session
+        self.ws = None
+        self.subscribed = set()
+        self.is_running = False
+
+    async def connect(self):
+        if not _ws_approval_key:
+            await init_websocket_keys(self.session)
+        if not _ws_approval_key: return
+
+        import config
+        h_url = getattr(config, 'host_url', getattr(config, 'HOST_URL', ''))
+        ws_url = "ws://ops.koreainvestment.com:21000"
+        if "vps" in h_url: ws_url = "ws://ops.koreainvestment.com:31000"
+        
+        try:
+            self.ws = await self.session.ws_connect(ws_url, ping_interval=60)
+            self.is_running = True
+            asyncio.create_task(self._listen())
+            print("🚀 [시스템] 실시간 웹소켓 틱 데이터 스트리밍 연결 완료.")
+        except Exception as e:
+            print(f"WS 연결 에러: {e}")
+
+    async def _listen(self):
+        try:
+            async for msg in self.ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    data = msg.data
+                    if data[0] == '0' or data[0] == '1': # 실시간 체결가 데이터 수신
+                        parts = data.split('|')
+                        if len(parts) >= 4:
+                            code_data = parts[3].split('^')
+                            if len(code_data) >= 2:
+                                code = code_data[0]
+                                price = abs(int(code_data[1]))
+                                realtime_prices[code] = price
+        except:
+            self.is_running = False
+
+    async def subscribe(self, code):
+        if code in self.subscribed or not self.is_running: return
+        req = {
+            "header": {"approval_key": _ws_approval_key, "custtype": "P", "tr_type": "1", "content-type": "utf-8"},
+            "body": {"input": {"tr_id": "H0STCNT0", "tr_key": code}}
+        }
+        await self.ws.send_json(req)
+        self.subscribed.add(code)
+
+    async def unsubscribe(self, code):
+        if code not in self.subscribed or not self.is_running: return
+        req = {
+            "header": {"approval_key": _ws_approval_key, "custtype": "P", "tr_type": "2", "content-type": "utf-8"},
+            "body": {"input": {"tr_id": "H0STCNT0", "tr_key": code}}
+        }
+        await self.ws.send_json(req)
+        self.subscribed.remove(code)
+        if code in realtime_prices:
+            del realtime_prices[code]
 
 async def get_estimated_assets(session):
     res, _ = await _request_api(session, '/api/dostk/acnt', 'kt00004', {'qry_tp': '0', 'dmst_stex_tp': 'AUTO'})
@@ -201,7 +286,7 @@ async def get_top_20_search_rank(session):
     for stk in res.get('item_inq_rank', [])[:20]:
         code = stk.get('stk_cd', '')
         if code:
-            result[code] = stk.get('stk_nm', '').strip()
+            result[code] = stk.get('stk_nm', '')
             
     return result
 
@@ -253,9 +338,11 @@ async def get_orderbook(session, stock_code):
     }
     res, _ = await _request_api(session, '/api/dostk/hoga', 'ka10081', params)
     if not res: 
-        return 0, 0
+        return 0, 0, 0, 0
         
     ask_vol = int(str(res.get('tot_sell_ho_remn', '0')).strip() or '0')
     bid_vol = int(str(res.get('tot_buy_ho_remn', '0')).strip() or '0')
+    ask_price = int(str(res.get('sell_ho_prc1', '0')).strip() or '0')
+    bid_price = int(str(res.get('buy_ho_prc1', '0')).strip() or '0')
     
-    return ask_vol, bid_vol
+    return ask_vol, bid_vol, ask_price, bid_price
