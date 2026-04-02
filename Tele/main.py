@@ -91,23 +91,16 @@ async def load_or_init_settings(session):
     default_settings = {
         'base_amount': 0,
         'risk_amount': 500000, 
-        'rr_ratio': 1.5,
         'auto_rr_ratio': 2.0, 
-        'min_tick_diff': 3,
-        'max_entry_gap_ticks': 50, 
         'gemini_amount': 500000,
         'gemini_tp_pct': 1.5,
         'gemini_sl_pct': 1.0,
         'gemini_filter_lvl': 3,
         'nxt_scan_enabled': False,
-        'max_holdings': 3,
         'custom_watchlist': {},
         'engine_gem_on': True,
         'engine_laptop_on': True, 
-        'engine_ob_on': True,
-        'engine_bpr_on': True,
         'time_filter_on': False,
-        'circuit_breaker_on': False
     }
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -207,39 +200,6 @@ def _generate_and_send_asset_chart(asset_history, base_amount, max_assets_today,
     telegram_bot.send_photo(chart_path, caption=caption)
     return True
 
-def _generate_and_send_candle_chart(candles, stock_name, stock_code, tic_scope, entry_price, sl_price, tp_price, strategy_name):
-    if not candles or len(candles) < 10: return False
-    target_candles = list(reversed(candles[:20]))
-    times = [c['time'][8:12] for c in target_candles] 
-    with chart_lock:
-        plt.figure(figsize=(10, 5))
-        plt.rcParams['font.family'] = 'Malgun Gothic'
-        plt.rcParams['axes.unicode_minus'] = False
-        for i, c in enumerate(target_candles):
-            color = 'red' if c['close'] >= c['open'] else 'blue'
-            plt.vlines(i, c['low'], c['high'], color=color, linewidth=1)
-            bh = abs(c['close'] - c['open'])
-            if bh == 0: bh = strategy.get_tick_size(c['close'])
-            plt.bar(i, bh, bottom=min(c['open'], c['close']), color=color, width=0.6)
-        plt.axhline(y=tp_price, color='green', linestyle='-.', linewidth=2, label='목표가 (TP)')
-        plt.axhline(y=entry_price, color='magenta', linestyle='-', linewidth=2, label='매수가 (Entry)')
-        plt.axhline(y=sl_price, color='black', linestyle='--', linewidth=2, label='손절가 (SL)')
-        plt.title(f"[{stock_name}] {strategy_name} 셋업 ({tic_scope}분봉)")
-        plt.xticks(range(0, len(times), 2), times[::2], rotation=45)
-        plt.legend(loc='best')
-        plt.grid(True, linestyle=':', alpha=0.5)
-        plt.tight_layout()
-        chart_path = f'candle_{stock_code}.png'
-        plt.savefig(chart_path)
-        plt.close()
-    telegram_bot.send_photo(chart_path, caption=f"👁️‍🗨️ {stock_name} {tic_scope}분봉 [{strategy_name}]")
-    try: os.remove(chart_path) 
-    except: pass
-
-async def send_candle_chart(session, stock_name, stock_code, tic_scope, entry_price, sl_price, tp_price, strategy_name):
-    candles = await kiwoom_api.get_candles(session, stock_code, tic_scope)
-    await asyncio.to_thread(_generate_and_send_candle_chart, candles, stock_name, stock_code, tic_scope, entry_price, sl_price, tp_price, strategy_name)
-
 def write_trade_log(filename, headers, row_data):
     file_exists = os.path.isfile(filename)
     with open(filename, 'a', newline='', encoding='utf-8-sig') as f:
@@ -268,7 +228,6 @@ async def main():
     
     is_paused = False
     current_macro_pct = 0.0 
-    daily_realized_pnl = 0  
     
     last_engine_scan_time = "스캔 대기 중"
     
@@ -283,22 +242,28 @@ async def main():
         for code in auto_watch_list.keys():
             await kiwoom_api.ws_client.subscribe(code)
 
-        manual_msg = f"""
-🤖 [관제탑 4대 퀀트 전술 스캐너 가동]
-💡 **채팅창에 'ㅁ' 을 입력하시면 통합 관제 대시보드가 열립니다.**
-        """
-        await send_tg_message(manual_msg.strip())
+        # 🚨 시스템 시작 시 메인 대시보드 자동 팝업
+        welcome_msg = f"🤖 [자동매매 시스템 가동 시작]\n초기화를 완료했습니다. 아래 대시보드에서 시스템을 통제하십시오."
+        dash_reply_markup = {
+            "inline_keyboard": [
+                [{"text": "📈 관심종목 관리", "callback_data": "menu_watch"}, {"text": "👀 감시 현황", "callback_data": "menu_monitor"}],
+                [{"text": "💰 계좌 잔고", "callback_data": "menu_balance"}, {"text": "📊 누적 통계 분석", "callback_data": "menu_analysis"}],
+                [{"text": "⚙️ 엔진 세팅", "callback_data": "menu_setting"}, {"text": "💡 도움말", "callback_data": "menu_help"}],
+                [{"text": "💸 미수/반대매매 방어 (D-2)", "callback_data": "menu_margin_clear"}] 
+            ]
+        }
+        await send_tg_message(welcome_msg, reply_markup=dash_reply_markup)
 
         while True:
             current_timestamp = time.time()
             now = datetime.now(KST) 
             today_str = now.strftime('%Y%m%d')
             
+            # 데일리 리셋
             if now.hour == 7 and now.minute == 55 and last_daily_reset_date != today_str:
                 asset_history.clear()    
                 max_assets_today = 0
                 max_assets_time = ""
-                daily_realized_pnl = 0 
                 is_paused = False 
                 alerted_obs.clear()
                 pending_setups.clear()
@@ -321,12 +286,44 @@ async def main():
                         await send_tg_message("⚠️ 아직 자산 차트를 그릴 충분한 데이터가 수집되지 않았습니다 (최소 20분 소요).")
                     continue
 
+                if cmd == 'ㅁ':
+                    msg = f"🎛️ [메인 관제탑 대시보드]\n"
+                    msg += f"📡 최근 엔진 스캔: {last_engine_scan_time}\n\n"
+                    msg += "원하시는 메뉴를 터치하십시오."
+                    reply_markup = {
+                        "inline_keyboard": [
+                            [{"text": "📈 관심종목 관리", "callback_data": "menu_watch"}, {"text": "👀 감시 현황", "callback_data": "menu_monitor"}],
+                            [{"text": "💰 계좌 잔고", "callback_data": "menu_balance"}, {"text": "📊 누적 통계 분석", "callback_data": "menu_analysis"}],
+                            [{"text": "⚙️ 엔진 세팅", "callback_data": "menu_setting"}, {"text": "💡 도움말", "callback_data": "menu_help"}],
+                            [{"text": "💸 미수/반대매매 방어 (D-2)", "callback_data": "menu_margin_clear"}] 
+                        ]
+                    }
+                    await send_tg_message(msg, reply_markup=reply_markup)
+                    continue
+
                 if cmd.startswith('cb:'):
                     cb_data = cmd.replace('cb:', '')
                     if cb_data == 'menu_setting': cmd = '세팅'
                     elif cb_data == 'menu_monitor': cmd = '감시'
                     elif cb_data == 'menu_balance': cmd = '잔고'
                     elif cb_data == 'menu_analysis': cmd = '분석'
+                    elif cb_data == 'menu_help':
+                        help_msg = """💡 **[시스템 도움말 가이드]**
+
+단축키 기능:
+채팅창에 아래의 글자를 입력하고 전송하세요.
+• **'ㅁ'** : 메인 관제탑 대시보드를 언제든 즉시 호출합니다.
+• **'ㄱ'** : 당일 실시간 자산 흐름 그래프를 렌더링하여 보여줍니다.
+
+작동 중인 자동매매 엔진:
+• **🤖 제미나이(스캘핑)** : 거래량이 폭발하는 양봉을 포착해 빠른 목표가에 전량 자동 익/손절합니다. (설정된 금액 고정 매수)
+• **💻 랩탑(스윙)** : 5분봉 기준 VWAP 상단의 눌림목 추세를 따라 자동 진입합니다. (리스크 금액 기반 수량 산출)
+
+기본 백그라운드 기능:
+• 10분 주기 자산 자동 보고 및 그래프 전송
+• 15시 20분 D-2 예수금 및 종가 보유 상태 자동 기록 (미수 방어용)"""
+                        await send_tg_message(help_msg)
+                        continue
                     elif cb_data == 'menu_watch':
                         watchlist = user_settings.get('custom_watchlist', {})
                         msg = f"📈 [관심종목 관리] (현재 {len(watchlist)}/10개)\n\n"
@@ -407,21 +404,6 @@ async def main():
                         await send_tg_message(msg)
                         continue
 
-                if cmd == 'ㅁ':
-                    msg = f"🎛️ [메인 관제탑 대시보드]\n"
-                    msg += f"📡 최근 엔진 스캔: {last_engine_scan_time}\n\n"
-                    msg += "원하시는 메뉴를 터치하십시오."
-                    reply_markup = {
-                        "inline_keyboard": [
-                            [{"text": "📈 관심종목 관리", "callback_data": "menu_watch"}, {"text": "👀 감시 현황", "callback_data": "menu_monitor"}],
-                            [{"text": "💰 계좌 잔고", "callback_data": "menu_balance"}, {"text": "📊 누적 통계 분석", "callback_data": "menu_analysis"}],
-                            [{"text": "⚙️ 엔진 세팅", "callback_data": "menu_setting"}],
-                            [{"text": "💸 미수/반대매매 방어 (D-2)", "callback_data": "menu_margin_clear"}] 
-                        ]
-                    }
-                    await send_tg_message(msg, reply_markup=reply_markup)
-                    continue
-
                 if cmd == '중지':
                     is_paused = True
                     await send_tg_message("🛑 [시스템 수동 중지] 모든 감시와 API 통신을 차단합니다.")
@@ -432,7 +414,6 @@ async def main():
                     continue
                 if cmd == '분석초기화':
                     if os.path.exists('gemini_log.csv'): os.rename('gemini_log.csv', f'gemini_log_bak_{now.strftime("%Y%m%d_%H%M%S")}.csv')
-                    if os.path.exists('ob_log.csv'): os.rename('ob_log.csv', f'ob_log_bak_{now.strftime("%Y%m%d_%H%M%S")}.csv')
                     if os.path.exists('laptop_log.csv'): os.rename('laptop_log.csv', f'laptop_log_bak_{now.strftime("%Y%m%d_%H%M%S")}.csv')
                     await send_tg_message(f"♻️ 딥러닝 누적 데이터가 백업/초기화되었습니다.")
                     continue
@@ -447,8 +428,8 @@ async def main():
                             def _categorize(row):
                                 reason = str(row.get('ExitReason', ''))
                                 pnl = float(row.get('PnL(%)', 0))
-                                if '익절' in reason or (reason == '무한트레일링' and pnl > 0): return 'Win'
-                                elif '본절' in reason or (reason == '무한트레일링' and pnl == 0): return 'Draw'
+                                if '익절' in reason or '목표가' in reason: return 'Win'
+                                elif '본절' in reason: return 'Draw'
                                 else: return 'Loss'
                             df['Category'] = df.apply(_categorize, axis=1)
                             total_cnt = len(df)
@@ -471,9 +452,8 @@ async def main():
                         except Exception as e:
                             return f"\n❌ {engine_name} 분석 오류: {e}\n"
 
-                    msg += _build_report('gemini_log.csv', '제미나 스캘핑', user_settings.get('gemini_amount', 500000))
+                    msg += _build_report('gemini_log.csv', '제미나이 스캘핑', user_settings.get('gemini_amount', 500000))
                     msg += _build_report('laptop_log.csv', '랩탑 스윙', user_settings.get('gemini_amount', 500000))
-                    msg += _build_report('ob_log.csv', '오더블럭 스윙', user_settings.get('gemini_amount', 500000)) 
                     await send_tg_message(msg)
                     continue
 
@@ -495,12 +475,6 @@ async def main():
                         
                         is_lap, lap_data = strategy.check_laptop_swing_model(c5, today_str, user_settings['risk_amount'])
                         msg += f"💻 랩탑 스윙(5m): {'✅ 자동 타점 포착 ('+str(lap_data.get('entry_price'))+'원)' if is_lap else '❌ 조건 불충족'}\n"
-
-                        is_ob3, ob3_data = strategy.check_orderblock_engulfing(c3, today_str, user_settings.get('rr_ratio', 1.5))
-                        msg += f"🎯 OB 스윙(3m): {'✅ 수동 타점 포착 ('+str(ob3_data.get('entry_price'))+'원)' if is_ob3 else '❌ 조건 불충족'}\n"
-                        
-                        is_bpr, bpr_data = strategy.check_bpr_ifvg_model(c5, today_str, user_settings.get('rr_ratio', 1.5))
-                        msg += f"🔥 BPR 스윙(5m): {'✅ 수동 타점 포착 ('+str(bpr_data.get('entry_price'))+'원)' if is_bpr else '❌ 조건 불충족'}\n"
                         await send_tg_message(msg)
                     continue
 
@@ -527,38 +501,6 @@ async def main():
                         else: await send_tg_message("❌ 올바른 6자리 종목코드를 입력하세요.")
                         awaiting_setting = None
                         continue
-                        
-                    elif awaiting_setting.startswith('customtp_'):
-                        parts = awaiting_setting.split('_')
-                        stk_code, qty, entry, sl = parts[1], int(parts[2]), int(parts[3]), int(parts[4])
-                        try:
-                            new_tp = strategy.floor_to_tick(int(cmd.replace(',', '').strip()))
-                            if new_tp <= entry: await send_tg_message("❌ 목표가는 진입가보다 높아야 합니다.")
-                            else:
-                                stk_name = stock_dict.get(stk_code, stk_code)
-                                await send_candle_chart(session, stk_name, stk_code, '5', entry, sl, new_tp, "수동 목표가")
-                                msg = f"🎯 [{stk_name} 수동 튜닝]\n• 대기: {entry:,}원\n• 손절: {sl:,}원\n• 익절: {new_tp:,}원\n• 수량: {qty:,}주"
-                                reply_markup = {"inline_keyboard": [[{"text": f"🚀 {qty}주 즉시 진입", "callback_data": f"buy_{stk_code}_{qty}_{entry}_{sl}_{new_tp}"}]]}
-                                await send_tg_message(msg, reply_markup=reply_markup)
-                        except ValueError: await send_tg_message("❌ 올바른 숫자가 아닙니다.")
-                        finally: awaiting_setting = None
-                        continue
-                    
-                    elif awaiting_setting.startswith('manualqty_'):
-                        parts = awaiting_setting.split('_')
-                        stk_code, entry, sl, tp = parts[1], int(parts[2]), int(parts[3]), int(parts[4])
-                        try:
-                            qty = int(cmd.replace(',', '').strip())
-                            if qty <= 0: await send_tg_message("❌ 수량은 1주 이상이어야 합니다.")
-                            else:
-                                stk_name = stock_dict.get(stk_code, stk_code)
-                                msg = f"🎯 [{stk_name} 부분 수량 진입]\n• 보정 수량: {qty:,}주\n강제 진입을 시도합니다."
-                                reply_markup = {"inline_keyboard": [[{"text": f"🚀 {qty}주 강제 진입", "callback_data": f"buy_{stk_code}_{qty}_{entry}_{sl}_{tp}"}]]}
-                                await send_tg_message(msg, reply_markup=reply_markup)
-                        except ValueError: await send_tg_message("❌ 취소합니다.")
-                        finally: awaiting_setting = None
-                        continue
-                        
                     else:
                         try:
                             val = float(cmd.replace(',', '').strip())
@@ -566,11 +508,7 @@ async def main():
                             elif awaiting_setting == 'gemini_amount': user_settings['gemini_amount'] = int(val)
                             elif awaiting_setting == 'gemini_tp': user_settings['gemini_tp_pct'] = val
                             elif awaiting_setting == 'gemini_sl': user_settings['gemini_sl_pct'] = val
-                            elif awaiting_setting == 'rr': user_settings['rr_ratio'] = val
                             elif awaiting_setting == 'autorr': user_settings['auto_rr_ratio'] = val
-                            elif awaiting_setting == 'mintick': user_settings['min_tick_diff'] = int(val)
-                            elif awaiting_setting == 'maxgap': user_settings['max_entry_gap_ticks'] = int(val)
-                            elif awaiting_setting == 'maxholdings': user_settings['max_holdings'] = int(val)
                                 
                             await send_tg_message("✅ 설정 변경이 완료되었습니다.")
                             def _save_set():
@@ -583,21 +521,14 @@ async def main():
                 if cmd == '세팅':
                     btn_gem = "🟢 제미나이 ON" if user_settings.get('engine_gem_on', True) else "🔴 제미나이 OFF"
                     btn_lap = "🟢 랩탑 스윙 ON" if user_settings.get('engine_laptop_on', True) else "🔴 랩탑 스윙 OFF"
-                    btn_ob = "🟢 OB 스윙 ON" if user_settings.get('engine_ob_on', True) else "🔴 OB 스윙 OFF"
-                    btn_bpr = "🟢 BPR 스윙 ON" if user_settings.get('engine_bpr_on', True) else "🔴 BPR 스윙 OFF"
                     btn_time = "⏱️ 시간대 필터 ON" if user_settings.get('time_filter_on', False) else "⏱️ 시간대 필터 OFF"
-                    btn_cb = "🛡️ 서킷브레이커 ON" if user_settings.get('circuit_breaker_on', False) else "🛡️ 서킷브레이커 OFF"
                     nxt_status = "🟢 ON (연장장 포함)" if user_settings.get('nxt_scan_enabled', False) else "🔴 OFF (정규장 전용)"
                     btn_gem_lvl = f"🎚️ 제미나이 필터: Lv.{user_settings.get('gemini_filter_lvl', 3)}"
                     
                     msg = f"⚙️ [시스템 세팅 현황]\n\n"
-                    msg += f"📘 포트폴리오 및 스윙 설정\n"
-                    msg += f"• 최대 보유 한도: {user_settings.get('max_holdings', 3)}종목\n"
+                    msg += f"📘 포트폴리오 및 랩탑 스윙 설정\n"
                     msg += f"• 1회 허용 손실(Risk): {user_settings.get('risk_amount', 500000):,}원\n"
-                    msg += f"• 자동 스윙 손익비(R:R): 1 : {user_settings.get('auto_rr_ratio', 2.0)}\n"
-                    msg += f"• 수동 스윙 손익비(R:R): 1 : {user_settings.get('rr_ratio', 1.5)}\n"
-                    msg += f"• 진입 이격 허용: {user_settings.get('max_entry_gap_ticks', 50)}틱\n"
-                    msg += f"• 휩쏘 방어 필터: {user_settings.get('min_tick_diff', 3)}틱\n\n"
+                    msg += f"• 스윙 손익비(R:R): 1 : {user_settings.get('auto_rr_ratio', 2.0)}\n\n"
                     
                     msg += f"🔥 제미나이 스캘핑 전용 설정\n"
                     msg += f"• 현재 필터 강도: Lv.{user_settings.get('gemini_filter_lvl', 3)}\n"
@@ -606,16 +537,14 @@ async def main():
                     msg += f"• 자동 손절(SL): -{user_settings.get('gemini_sl_pct', 1.0)}%\n\n"
                     
                     msg += f"🌌 NXT 스캔 모드: {nxt_status}\n\n"
-                    msg += f"🎛️ 4대 엔진 및 보호막 스위치 (클릭하여 변경)\n"
+                    msg += f"🎛️ 엔진 스위치 (클릭하여 변경)\n"
                     
                     reply_markup = {
                         "inline_keyboard": [
                             [{"text": btn_gem, "callback_data": "toggle_gem"}, {"text": btn_lap, "callback_data": "toggle_lap"}],
-                            [{"text": btn_ob, "callback_data": "toggle_ob"}, {"text": btn_bpr, "callback_data": "toggle_bpr"}],
-                            [{"text": btn_time, "callback_data": "toggle_time"}, {"text": btn_cb, "callback_data": "toggle_cb"}],
-                            [{"text": btn_gem_lvl, "callback_data": "cycle_gem_lvl"}, {"text": "포트폴리오 한도", "callback_data": "set_maxholdings"}],
-                            [{"text": "자동 진입금액", "callback_data": "set_gemini_amount"}, {"text": "자동 손익비", "callback_data": "set_autorr"}],
-                            [{"text": "수동 손실비용", "callback_data": "set_risk"}, {"text": "수동 손익비", "callback_data": "set_rr"}],
+                            [{"text": btn_time, "callback_data": "toggle_time"}],
+                            [{"text": btn_gem_lvl, "callback_data": "cycle_gem_lvl"}, {"text": "자동 진입금액", "callback_data": "set_gemini_amount"}],
+                            [{"text": "수동 손실비용", "callback_data": "set_risk"}, {"text": "스윙 손익비", "callback_data": "set_autorr"}],
                             [{"text": "NXT 스캔 전환", "callback_data": "toggle_nxt"}, {"text": "기준 자산 갱신", "callback_data": "set_base"}]
                         ]
                     }
@@ -640,11 +569,7 @@ async def main():
                         await send_tg_message(msg)
                         continue
 
-                    toggle_map = {
-                        'toggle_gem': 'engine_gem_on', 'toggle_lap': 'engine_laptop_on', 
-                        'toggle_ob': 'engine_ob_on', 'toggle_bpr': 'engine_bpr_on',
-                        'toggle_time': 'time_filter_on', 'toggle_cb': 'circuit_breaker_on'
-                    }
+                    toggle_map = {'toggle_gem': 'engine_gem_on', 'toggle_lap': 'engine_laptop_on', 'toggle_time': 'time_filter_on'}
                     if cb_data in toggle_map:
                         key = toggle_map[cb_data]
                         user_settings[key] = not user_settings.get(key, True if 'engine' in key else False)
@@ -664,127 +589,11 @@ async def main():
                         await send_tg_message(f"✅ NXT 연장장 스캔 모드가 **{new_status}** 되었습니다.")
                         continue
                     
-                    if cb_data in ['set_base', 'set_risk', 'set_rr', 'set_autorr', 'set_mintick', 'set_maxgap', 'set_gemini_amount', 'set_gemini_tp', 'set_gemini_sl', 'set_maxholdings']:
+                    if cb_data in ['set_base', 'set_risk', 'set_autorr', 'set_gemini_amount', 'set_gemini_tp', 'set_gemini_sl']:
                         awaiting_setting = cb_data.replace('set_', '')
                         await send_tg_message(f"✏️ 새로운 값을 숫자로만 입력하세요.")
                         continue
-                        
-                    if cb_data.startswith('chgtp_'):
-                        parts = cb_data.split('_')
-                        awaiting_setting = f"customtp_{parts[1]}_{parts[2]}_{parts[3]}_{parts[4]}"
-                        stk_name = stock_dict.get(parts[1], parts[1])
-                        await send_tg_message(f"✏️ [{stk_name}] 새로운 익절가를 입력하세요:")
-                        continue
 
-                    if cb_data.startswith('chgqty_'):
-                        parts = cb_data.split('_')
-                        awaiting_setting = f"manualqty_{parts[1]}_{parts[2]}_{parts[3]}_{parts[4]}"
-                        stk_name = stock_dict.get(parts[1], parts[1])
-                        await send_tg_message(f"✏️ [{stk_name}] 현재 살 수 있는 최대 수량(주)을 숫자로 입력하세요:")
-                        continue
-                    
-                    if cb_data.startswith('adj_'):
-                        parts = cb_data.split('_')
-                        adj_type, stk_code = parts[1], parts[2]
-                        if adj_type == 'qty':
-                            delta, qty, entry, sl, tp, strat = int(parts[3]), int(parts[4]), int(parts[5]), int(parts[6]), int(parts[7]), parts[8]
-                            new_qty = max(1, qty + delta)
-                            new_tp = tp
-                        elif adj_type == 'tp':
-                            delta_pct, qty, entry, sl, tp, strat = float(parts[3]), int(parts[4]), int(parts[5]), int(parts[6]), int(parts[7]), parts[8]
-                            new_tp = int(tp * (1 + delta_pct/100.0))
-                            try: new_tp = strategy.floor_to_tick(new_tp)
-                            except: pass
-                            new_qty = qty
-                            
-                        stk_name = stock_dict.get(stk_code, stk_code)
-                        rt_price = kiwoom_api.realtime_prices.get(stk_code)
-                        if not rt_price:
-                            rt_c = await kiwoom_api.get_candles(session, stk_code, '1')
-                            rt_price = abs(int(rt_c[0]['close'])) if rt_c else entry
-                            
-                        diff = strategy.count_exact_ticks(rt_price, entry)
-                        sign_str = "+" if entry > rt_price else "-"
-                        
-                        msg = f"🎯 [{stk_name} 수동 진입 (값 보정됨)]\n• 엔진: {strat}\n• 현재가: {rt_price:,}원\n• 대기: {entry:,}원 ({sign_str}{diff}틱)\n• 손절: {sl:,}원\n• 목표: {new_tp:,}원\n• 수량: {new_qty:,}주"
-                        reply_markup = {"inline_keyboard": [
-                            [{"text": f"🚀 {new_qty}주 승인", "callback_data": f"buy_{stk_code}_{new_qty}_{entry}_{sl}_{new_tp}"}],
-                            [{"text": "➖ 10주", "callback_data": f"adj_qty_{stk_code}_{-10}_{new_qty}_{entry}_{sl}_{new_tp}_{strat}"},
-                             {"text": "➕ 10주", "callback_data": f"adj_qty_{stk_code}_{10}_{new_qty}_{entry}_{sl}_{new_tp}_{strat}"}],
-                            [{"text": "🔻 TP -0.5%", "callback_data": f"adj_tp_{stk_code}_{-0.5}_{new_qty}_{entry}_{sl}_{new_tp}_{strat}"},
-                             {"text": "🔺 TP +0.5%", "callback_data": f"adj_tp_{stk_code}_{0.5}_{new_qty}_{entry}_{sl}_{new_tp}_{strat}"}]
-                        ]}
-                        await send_tg_message(msg, reply_markup=reply_markup)
-                        continue
-                    
-                    if cb_data.startswith('obcalc_'):
-                        parts = cb_data.split('_')
-                        if len(parts) < 6: continue
-                        stk_code, tic, entry, sl, tp = parts[1], parts[2], int(parts[3]), int(parts[4]), int(parts[5])
-                        strategy_name = parts[6] if len(parts) >= 7 else "수동 산출"
-                        
-                        risk_share = entry - sl
-                        qty = user_settings['risk_amount'] // risk_share if risk_share > 0 else 0
-                        if qty == 0:
-                            await send_tg_message("❌ 매수 불가: 손실비용 초과.")
-                            continue
-                            
-                        stk_name = stock_dict.get(stk_code, stk_code)
-                        await send_candle_chart(session, stk_name, stk_code, tic, entry, sl, tp, strategy_name)
-                        
-                        rt_price = kiwoom_api.realtime_prices.get(stk_code)
-                        if not rt_price:
-                            rt_c = await kiwoom_api.get_candles(session, stk_code, '1')
-                            rt_price = abs(int(rt_c[0]['close'])) if rt_c else entry
-                            
-                        diff = strategy.count_exact_ticks(rt_price, entry)
-                        sign_str = "+" if entry > rt_price else "-"
-                        
-                        msg = f"🎯 [{stk_name} 수동 진입 대기]\n• 엔진: {strategy_name}\n• 현재가: {rt_price:,}원\n• 대기: {entry:,}원 ({sign_str}{diff}틱)\n• 손절: {sl:,}원\n• 목표: {tp:,}원\n• 수량: {qty:,}주"
-                        reply_markup = {"inline_keyboard": [
-                            [{"text": f"🚀 {qty}주 승인", "callback_data": f"buy_{stk_code}_{qty}_{entry}_{sl}_{tp}"}],
-                            [{"text": "➖ 10주", "callback_data": f"adj_qty_{stk_code}_{-10}_{qty}_{entry}_{sl}_{tp}_{strategy_name}"},
-                             {"text": "➕ 10주", "callback_data": f"adj_qty_{stk_code}_{10}_{qty}_{entry}_{sl}_{tp}_{strategy_name}"}],
-                            [{"text": "🔻 TP -0.5%", "callback_data": f"adj_tp_{stk_code}_{-0.5}_{qty}_{entry}_{sl}_{tp}_{strategy_name}"},
-                             {"text": "🔺 TP +0.5%", "callback_data": f"adj_tp_{stk_code}_{0.5}_{qty}_{entry}_{sl}_{tp}_{strategy_name}"}]
-                        ]}
-                        await send_tg_message(msg, reply_markup=reply_markup)
-                        continue
-
-                    if cb_data.startswith('buy_'):
-                        parts = cb_data.split('_')
-                        if len(parts) >= 5:
-                            stock_code, qty, entry, sl = parts[1], int(parts[2]), int(parts[3]), int(parts[4])
-                            tp = int(parts[5]) if len(parts) >= 6 else 0
-                            stk_name = stock_dict.get(stock_code, stock_code)
-                            
-                            buy_result, odno = await kiwoom_api.buy_limit_order(session, stock_code, qty, entry)
-                            if "✅" in buy_result:
-                                await send_tg_message(buy_result)
-                                ob_meta = pending_setups.get(stock_code, {})
-                                auto_watch_list[stock_code] = {
-                                    'name': stk_name, 'entry': entry, 'sl': sl, 'tp': tp, 
-                                    'status': 'pending', 'half_sold': False, 'max_reached': entry, 
-                                    'odno': odno, 'entry_time': time.time(),
-                                    'is_ob_swing': (ob_meta.get('strategy') == 'OB'), 'tf': ob_meta.get('tf', '5m'), 'meta': ob_meta
-                                }
-                                await save_watch_list(redis_client, auto_watch_list, use_redis)
-                                if kiwoom_api.ws_client: await kiwoom_api.ws_client.subscribe(stock_code)
-                            else:
-                                match = re.search(r'(\d+)\s*주\s*매수가능', buy_result)
-                                if match and int(match.group(1)) > 0:
-                                    max_qty = int(match.group(1))
-                                    msg = f"⚠️ [증거금 부족 자동 보정]\n💡 {max_qty}주 (최대) 진입하시겠습니까?"
-                                    reply_markup = {"inline_keyboard": [[{"text": f"🚀 {max_qty}주 진입", "callback_data": f"buy_{stock_code}_{max_qty}_{entry}_{sl}_{tp}"}]]}
-                                    await send_tg_message(msg, reply_markup=reply_markup)
-                                elif any(keyword in buy_result for keyword in ["증거금", "부족", "초과", "가능금액", "잔고"]):
-                                    msg = f"⚠️ [매수 증거금 부족]\n💡 수량을 직접 입력하시겠습니까?"
-                                    reply_markup = {"inline_keyboard": [[{"text": "✍️ 수량 직접 입력", "callback_data": f"chgqty_{stock_code}_{entry}_{sl}_{tp}"}]]}
-                                    await send_tg_message(msg, reply_markup=reply_markup)
-                                else:
-                                    await send_tg_message(buy_result)
-                        continue
-                
                 if cmd == '잔고':
                     bal = await kiwoom_api.get_account_balance(session)
                     if bal: await send_tg_message(bal.replace('📊 ', '').replace('📋 ', ''))
@@ -809,12 +618,9 @@ async def main():
                         watch_msg = "👀 [현재 감시 현황]\n\n"
                         for code, cond in auto_watch_list.items():
                             status_str = "🟢 활성" if cond['status'] == 'active' else "⏳ 대기"
-                            engine_str = "기타"
-                            if cond.get('is_gemini'): engine_str = "제미나이 스캘핑"
-                            elif cond.get('is_laptop'): engine_str = "랩탑 스윙"
-                            elif cond.get('is_ob_swing'): engine_str = f"{cond.get('meta', {}).get('strategy', 'OB')} 스윙"
-                            
-                            watch_msg += f"🔹 {cond.get('name', code)} ({engine_str} / {status_str})\n"
+                            engine_str = "제미나이 스캘핑" if cond.get('is_gemini') else "랩탑 스윙"
+                            qty_str = f"({cond.get('qty', 0)}주)"
+                            watch_msg += f"🔹 {cond.get('name', code)} {qty_str} - {engine_str} / {status_str}\n"
                         await send_tg_message(watch_msg)
                     continue
 
@@ -863,14 +669,10 @@ async def main():
 
             allow_gem = user_settings.get('engine_gem_on', True)
             allow_lap = user_settings.get('engine_laptop_on', True)
-            allow_ob = user_settings.get('engine_ob_on', True)
-            allow_bpr = user_settings.get('engine_bpr_on', True)
             
             if user_settings.get('time_filter_on', False):
                 if not (9 <= now.hour <= 10 and (now.hour == 9 or now.minute <= 30)):
                     allow_gem, allow_lap = False, False
-                if not (13 <= now.hour <= 15 and (now.hour < 15 or now.minute <= 20)):
-                    allow_ob, allow_bpr = False, False
 
             if is_scan_time and (current_timestamp - last_scan_time > 50):
                 is_3m = (now.minute % 3 == 0)
@@ -938,37 +740,17 @@ async def main():
                                                 buy_res, odno = await kiwoom_api.buy_limit_order(session, code, qty, entry)
                                                 if "✅" in buy_res:
                                                     gemini_data['meta']['macro_pct'] = current_macro_pct 
-                                                    auto_watch_list[code] = {'name': stock_dict[code], 'entry': entry, 'sl': gemini_data['sl_price'], 'tp': gemini_data['dynamic_tp'], 'status': 'pending', 'half_sold': False, 'max_reached': entry, 'odno': odno, 'is_gemini': True, 'meta': gemini_data['meta'], 'entry_time': time.time()}
+                                                    # 🚨 진입 수량(qty) 명시적 기록
+                                                    auto_watch_list[code] = {'name': stock_dict[code], 'qty': qty, 'entry': entry, 'sl': gemini_data['sl_price'], 'tp': gemini_data['dynamic_tp'], 'status': 'pending', 'odno': odno, 'is_gemini': True, 'meta': gemini_data['meta'], 'entry_time': time.time()}
                                                     await save_watch_list(redis_client, auto_watch_list, use_redis)
                                                     if kiwoom_api.ws_client: await kiwoom_api.ws_client.subscribe(code)
                                                     msg = f"🤖 [제미나이 자동매수] {stock_dict[code]} {qty}주 완료\n"
                                                     msg += f"• 매수가: {entry:,}원\n"
                                                     msg += f"• 목표가: {gemini_data['dynamic_tp']:,}원 (+{user_settings.get('gemini_tp_pct', 1.5)}%)\n"
                                                     msg += f"• 손절가: {gemini_data['sl_price']:,}원 (-{user_settings.get('gemini_sl_pct', 1.0)}%)\n"
-                                                    msg += f"• 작동 Lv: {user_settings.get('gemini_filter_lvl', 3)}\n"
-                                                    msg += f"• 진단 팩트: {gemini_data['meta'].get('diag_msg', '확인불가')}"
+                                                    msg += f"• 진단: {gemini_data['meta'].get('diag_msg', '확인불가')}"
                                                     await send_tg_message(msg)
                                             continue 
-                                        
-                                    if allow_ob:
-                                        is_ob, ob_data = strategy.check_orderblock_engulfing(candles_3m, today_str, user_settings.get('rr_ratio', 1.5))
-                                        if is_ob:
-                                            ob_data['tf'] = '3m'
-                                            ob_data['meta']['macro_pct'] = current_macro_pct 
-                                            alert_key = f"{code}_3m_OB_{ob_data['time']}"
-                                            if alert_key not in alerted_obs:
-                                                alerted_obs.add(alert_key)
-                                                await save_alerted_obs(alerted_obs)
-                                                pending_setups[code] = ob_data
-                                                
-                                                ask_v, bid_v, _, _ = await kiwoom_api.get_orderbook(session, code)
-                                                opt_entry = strategy.optimize_entry_with_orderbook(ob_data['entry_price'], ask_v, bid_v)
-                                                rt_price = abs(int(candles_3m[0]['close']))
-                                                
-                                                if strategy.count_exact_ticks(rt_price, opt_entry) <= user_settings.get('max_entry_gap_ticks', 50) and strategy.count_exact_ticks(ob_data['sl_price'], opt_entry) >= user_settings.get('min_tick_diff', 3):
-                                                    msg = f"🔥 [수동 스윙: OB] (3분봉)\n• 종목: {stock_dict[code]}\n• 현재가: {rt_price:,}원\n• 매수가: {opt_entry:,}원\n• 손절가: {ob_data['sl_price']:,}원\n• 목표가: {ob_data['dynamic_tp']:,}원\n*(진입 승인 대기)*"
-                                                    reply_markup = {"inline_keyboard": [[{"text": f"⚡ 수동 타점 확인", "callback_data": f"obcalc_{code}_3_{opt_entry}_{ob_data['sl_price']}_{ob_data['dynamic_tp']}_OB"}]]}
-                                                    await send_tg_message(msg, reply_markup=reply_markup)
 
                             if is_5m and code in candles_5m_dict:
                                 candles_5m = candles_5m_dict[code]
@@ -989,62 +771,19 @@ async def main():
                                                 buy_res, odno = await kiwoom_api.buy_limit_order(session, code, qty, entry)
                                                 if "✅" in buy_res:
                                                     lap_data['meta']['macro_pct'] = current_macro_pct 
-                                                    auto_watch_list[code] = {'name': stock_dict[code], 'entry': entry, 'sl': lap_data['sl_price'], 'tp': lap_data['dynamic_tp'], 'status': 'pending', 'half_sold': False, 'max_reached': entry, 'odno': odno, 'is_laptop': True, 'meta': lap_data['meta'], 'entry_time': time.time()}
+                                                    # 🚨 진입 수량(qty) 명시적 기록
+                                                    auto_watch_list[code] = {'name': stock_dict[code], 'qty': qty, 'entry': entry, 'sl': lap_data['sl_price'], 'tp': lap_data['dynamic_tp'], 'status': 'pending', 'odno': odno, 'is_laptop': True, 'meta': lap_data['meta'], 'entry_time': time.time()}
                                                     await save_watch_list(redis_client, auto_watch_list, use_redis)
                                                     if kiwoom_api.ws_client: await kiwoom_api.ws_client.subscribe(code)
-                                                    await send_tg_message(f"💻 [랩탑 자동매수] {stock_dict[code]} {qty}주 완료 (리스크 동일화 적용)")
+                                                    await send_tg_message(f"💻 [랩탑 자동매수] {stock_dict[code]} {qty}주 완료")
                                         continue
-
-                                if allow_bpr:
-                                    is_bpr, bpr_data = strategy.check_bpr_ifvg_model(candles_5m, today_str, user_settings.get('rr_ratio', 1.5))
-                                    if is_bpr:
-                                        bpr_data['tf'] = '5m'
-                                        bpr_data['meta']['macro_pct'] = current_macro_pct 
-                                        alert_key = f"{code}_5m_BPR_{bpr_data['time']}"
-                                        if alert_key not in alerted_obs:
-                                            alerted_obs.add(alert_key)
-                                            await save_alerted_obs(alerted_obs)
-                                            pending_setups[code] = bpr_data
-                                            
-                                            ask_v, bid_v, _, _ = await kiwoom_api.get_orderbook(session, code)
-                                            opt_entry = strategy.optimize_entry_with_orderbook(bpr_data['entry_price'], ask_v, bid_v)
-                                            rt_price = abs(int(candles_5m[0]['close']))
-                                            
-                                            if strategy.count_exact_ticks(rt_price, opt_entry) <= user_settings.get('max_entry_gap_ticks', 50) and strategy.count_exact_ticks(bpr_data['sl_price'], opt_entry) >= user_settings.get('min_tick_diff', 3):
-                                                msg = f"🔥 [수동 스윙: BPR] (5분봉)\n• 종목: {stock_dict[code]}\n• 현재가: {rt_price:,}원\n• 매수가: {opt_entry:,}원\n• 손절가: {bpr_data['sl_price']:,}원\n• 목표가: {bpr_data['dynamic_tp']:,}원\n*(진입 승인 대기)*"
-                                                reply_markup = {"inline_keyboard": [[{"text": f"⚡ 수동 타점 확인", "callback_data": f"obcalc_{code}_5_{opt_entry}_{bpr_data['sl_price']}_{bpr_data['dynamic_tp']}_BPR"}]]}
-                                                await send_tg_message(msg, reply_markup=reply_markup)
-                                        continue
-
-                                if allow_ob:
-                                    is_ob, ob_data = strategy.check_orderblock_engulfing(candles_5m, today_str, user_settings.get('rr_ratio', 1.5))
-                                    if is_ob:
-                                        ob_data['tf'] = '5m'
-                                        ob_data['meta']['macro_pct'] = current_macro_pct 
-                                        alert_key = f"{code}_5m_OB_{ob_data['time']}"
-                                        if alert_key not in alerted_obs:
-                                            alerted_obs.add(alert_key)
-                                            await save_alerted_obs(alerted_obs)
-                                            pending_setups[code] = ob_data
-                                            
-                                            ask_v, bid_v, _, _ = await kiwoom_api.get_orderbook(session, code)
-                                            opt_entry = strategy.optimize_entry_with_orderbook(ob_data['entry_price'], ask_v, bid_v)
-                                            rt_price = abs(int(candles_5m[0]['close']))
-                                            
-                                            if strategy.count_exact_ticks(rt_price, opt_entry) <= user_settings.get('max_entry_gap_ticks', 50) and strategy.count_exact_ticks(ob_data['sl_price'], opt_entry) >= user_settings.get('min_tick_diff', 3):
-                                                msg = f"🔥 [수동 스윙: OB] (5분봉)\n• 종목: {stock_dict[code]}\n• 현재가: {rt_price:,}원\n• 매수가: {opt_entry:,}원\n• 손절가: {ob_data['sl_price']:,}원\n• 목표가: {ob_data['dynamic_tp']:,}원\n*(진입 승인 대기)*"
-                                                reply_markup = {"inline_keyboard": [[{"text": f"⚡ 수동 타점 확인", "callback_data": f"obcalc_{code}_5_{opt_entry}_{ob_data['sl_price']}_{ob_data['dynamic_tp']}_OB"}]]}
-                                                await send_tg_message(msg, reply_markup=reply_markup)
                 last_scan_time = time.time()
 
             if is_active_day and auto_watch_list and (current_timestamp - last_monitor_time >= 1):
                 state_changed = False
                 
                 for code, cond in list(auto_watch_list.items()):
-                    # 🚨 1순위: 웹소켓 메모리 직접 참조 (제로 딜레이)
                     rt_price = kiwoom_api.realtime_prices.get(code)
-                    
-                    # 🚨 2순위: 웹소켓이 비어있으면 REST API 긴급 호출 (하이브리드)
                     if not rt_price:
                         async with api_semaphore:
                             c1 = await kiwoom_api.get_candles(session, code, '1')
@@ -1053,153 +792,68 @@ async def main():
                         
                     stock_name = cond.get('name', code)
                     
-                    # (잔고 편입 여부는 기존 주문 체결 여부로 갈음하거나 별도 로직 보강)
                     if cond['status'] == 'pending':
                         cond['status'] = 'active'
                         state_changed = True
                         await send_tg_message(f"🟢 [{stock_name}] 감시 활성화 (웹소켓 연결 완료).")
-
-                    max_reached = cond.get('max_reached', cond['entry'])
-                    if rt_price > max_reached: cond['max_reached'] = rt_price
-
-                    if not cond.get('half_sold', False) and not cond.get('be_triggered', False):
-                        is_trigger = False
-                        if cond.get('is_gemini') and rt_price >= (cond['entry'] * 1.01): is_trigger = True
-                        elif (cond.get('is_ob_swing') or cond.get('is_laptop')) and cond['tp'] > 0 and rt_price >= (cond['entry'] + (cond['tp'] - cond['entry'])/2): is_trigger = True
-                        
-                        if is_trigger:
-                            be_sl = strategy.ceil_to_tick(cond['entry'] * 1.003) 
-                            if be_sl > cond['sl']:
-                                cond['sl'] = be_sl
-                                cond['be_triggered'] = True
-                                state_changed = True
                     
+                    # 🚨 심플하고 강력한 시장가 매도 로직 (오류 해결)
                     if cond['tp'] > 0 and rt_price >= cond['tp']:
-                        if not cond.get('half_sold', False):
-                            # 수량은 기존 매수 지시 수량을 참조하여 보수적으로 투매 시도 (잔고가 없는 경우 등 대비)
-                            # 안전을 위해 절반 매도 처리 (실제 잔고 연동 시에는 get_holdings_data 와 결합 필요)
-                            # 여기서는 예시로 로직 유지
-                            held_qty = user_settings.get('gemini_amount', 500000) // cond['entry']
-                            sell_qty = held_qty // 2
-                            if sell_qty == 0: sell_qty = held_qty
-                                
-                            sell_res = await kiwoom_api.sell_market_order(session, code, sell_qty)
-                            if "✅" not in sell_res: sell_res = await kiwoom_api.sell_limit_order(session, code, sell_qty, rt_price)
-                            await send_tg_message(f"🚀 [{stock_name}] 타겟 도달! 익절결과: {sell_res}")
-                            
-                            if "✅" in sell_res:
-                                pnl_pct = round(((rt_price - cond['entry']) / cond['entry']) * 100, 2)
-                                daily_realized_pnl += (rt_price - cond['entry']) * sell_qty
-                                hold_sec = int(time.time() - cond.get('entry_time', time.time()))
-                                mfe_pct = round(((cond['max_reached'] - cond['entry']) / cond['entry']) * 100, 2)
-                                meta = cond.get('meta', {})
-                                
-                                if held_qty - sell_qty > 0:
-                                    new_sl = strategy.ceil_to_tick(cond['entry'] * 1.01)
-                                    cond.update({'sl': new_sl, 'tp': 0, 'half_sold': True})
-                                    state_changed = True
-                                    await send_tg_message(f"🛡️ [무한 트레일링] 잔여 물량 추적 시작 (최소보장: {new_sl:,}원)")
-                                    reason = "반익절(TP)"
-                                else:
-                                    del auto_watch_list[code]
-                                    if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
-                                    state_changed = True
-                                    reason = "전량익절(TP)"
-                                    
-                                if cond.get('is_gemini'):
-                                    headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'UpperTailRatio', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                    row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), meta.get('upper_tail_ratio', 0), meta.get('macro_pct', 0.0), hold_sec, mfe_pct, reason]
-                                    await asyncio.to_thread(write_trade_log, 'gemini_log.csv', headers, row)
-                                elif cond.get('is_laptop'):
-                                    headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'Dummy', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                    row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, mfe_pct, reason]
-                                    await asyncio.to_thread(write_trade_log, 'laptop_log.csv', headers, row)
-                                elif cond.get('is_ob_swing'):
-                                    headers = ['Date', 'Code', 'Name', 'Timeframe', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolRatio', 'InitialRR', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                    row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('tf', '5m'), cond['entry'], rt_price, pnl_pct, meta.get('vol_ratio', 0), meta.get('actual_rr', 0), meta.get('macro_pct', 0.0), hold_sec, mfe_pct, reason]
-                                    await asyncio.to_thread(write_trade_log, 'ob_log.csv', headers, row)
-                            else:
-                                if "20" in sell_res or "부족" in sell_res:
-                                    await send_tg_message(f"⚠️ [{stock_name}] 수량 부족/미체결 묶임(에러 20) 팩트 확인. 봇 감시를 강제 종료합니다. (HTS/MTS 수동 확인 요망)")
-                                    del auto_watch_list[code]
-                                    if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
-                                else:
-                                    cond['tp'] = 0 
-                                    await send_tg_message(f"⚠️ [{stock_name}] 통신 에러 누적 방지. 수동 대응 바랍니다.")
-                                state_changed = True
+                        sell_qty = cond.get('qty', 1) 
+                        sell_res = await kiwoom_api.sell_market_order(session, code, sell_qty)
                         
-                        elif cond.get('half_sold', False) and cond['tp'] == 0:
-                            trail_gap = (cond['entry'] * 0.015) 
-                            new_sl = max(cond['sl'], strategy.floor_to_tick(cond['max_reached'] - trail_gap))
-                            if new_sl > cond['sl']:
-                                cond['sl'] = new_sl
-                                state_changed = True
-
-                        if cond['sl'] > 0 and rt_price <= cond['sl']:
-                            reason_msg = "손절선"
-                            if cond.get('half_sold'): reason_msg = "트레일링 방어선"
-                            elif cond.get('be_triggered'): reason_msg = "본절 방어선"
-                            
-                            await send_tg_message(f"🔴 [{stock_name}] {reason_msg} 이탈! 동적 지정가 투매(Dynamic Limit Chaser) 시작.")
-                            
-                            _, _, _, best_bid = await kiwoom_api.get_orderbook(session, code)
-                            target_sell_price = best_bid if best_bid > 0 else rt_price
-                            
-                            try:
-                                tick_size = strategy.get_tick_size(target_sell_price)
-                                target_sell_price = target_sell_price - tick_size
-                            except:
-                                target_sell_price = target_sell_price - 1
+                        if "✅" in sell_res:
+                            await send_tg_message(f"🚀 [{stock_name}] 목표가({cond['tp']:,}원) 도달! 전량 익절 청산(시장가).\n결과: {sell_res}")
+                            pnl_pct = round(((rt_price - cond['entry']) / cond['entry']) * 100, 2)
+                            hold_sec = int(time.time() - cond.get('entry_time', time.time()))
+                            meta = cond.get('meta', {})
                                 
-                            held_qty = user_settings.get('gemini_amount', 500000) // cond['entry'] # 보수적 투매
-                            sell_res = await kiwoom_api.sell_limit_order(session, code, held_qty, target_sell_price)
-                            
-                            if "✅" not in sell_res:
-                                await send_tg_message(f"⚠️ 동적 지정가 거부됨. 플랜 C(시장가) 즉시 투매 시작.")
-                                sell_res = await kiwoom_api.sell_market_order(session, code, held_qty)
-
-                            if "✅" in sell_res:
-                                await send_tg_message(f"🚩 [{stock_name}] 강제 청산 완료. 결과: {sell_res}")
-                                pnl_pct = round(((rt_price - cond['entry']) / cond['entry']) * 100, 2)
-                                daily_realized_pnl += (rt_price - cond['entry']) * held_qty
-                                hold_sec = int(time.time() - cond.get('entry_time', time.time()))
-                                mfe_pct = round(((cond['max_reached'] - cond['entry']) / cond['entry']) * 100, 2)
-                                meta = cond.get('meta', {})
+                            if cond.get('is_gemini'):
+                                headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'UpperTailRatio', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
+                                row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, pnl_pct, "전량익절(목표가)"]
+                                await asyncio.to_thread(write_trade_log, 'gemini_log.csv', headers, row)
+                            elif cond.get('is_laptop'):
+                                headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'Dummy', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
+                                row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, pnl_pct, "전량익절(목표가)"]
+                                await asyncio.to_thread(write_trade_log, 'laptop_log.csv', headers, row)
                                 
-                                if cond.get('half_sold'): reason = "무한트레일링"
-                                elif cond.get('be_triggered'): reason = "본절(B/E)"
-                                else: reason = "손절(SL)"
+                            del auto_watch_list[code]
+                            if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
+                            state_changed = True
+                        else:
+                            await send_tg_message(f"⚠️ [{stock_name}] 익절 실패! 수동 확인 요망.\n결과: {sell_res}")
+                            cond['tp'] = 0 # 중복 매도 방지
+                            state_changed = True
+
+                    elif cond['sl'] > 0 and rt_price <= cond['sl']:
+                        sell_qty = cond.get('qty', 1)
+                        sell_res = await kiwoom_api.sell_market_order(session, code, sell_qty)
+                        
+                        if "✅" in sell_res:
+                            await send_tg_message(f"🔴 [{stock_name}] 손절가({cond['sl']:,}원) 이탈! 전량 손절 청산(시장가).\n결과: {sell_res}")
+                            pnl_pct = round(((rt_price - cond['entry']) / cond['entry']) * 100, 2)
+                            hold_sec = int(time.time() - cond.get('entry_time', time.time()))
+                            meta = cond.get('meta', {})
+                                
+                            if cond.get('is_gemini'):
+                                headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'UpperTailRatio', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
+                                row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, 0, "손절(SL)"]
+                                await asyncio.to_thread(write_trade_log, 'gemini_log.csv', headers, row)
+                            elif cond.get('is_laptop'):
+                                headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'Dummy', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
+                                row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, 0, "손절(SL)"]
+                                await asyncio.to_thread(write_trade_log, 'laptop_log.csv', headers, row)
                                     
-                                if cond.get('is_gemini'):
-                                    headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'UpperTailRatio', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                    row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), meta.get('upper_tail_ratio', 0), meta.get('macro_pct', 0.0), hold_sec, mfe_pct, reason]
-                                    await asyncio.to_thread(write_trade_log, 'gemini_log.csv', headers, row)
-                                elif cond.get('is_laptop'):
-                                    headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'Dummy', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                    row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, mfe_pct, reason]
-                                    await asyncio.to_thread(write_trade_log, 'laptop_log.csv', headers, row)
-                                elif cond.get('is_ob_swing'):
-                                    headers = ['Date', 'Code', 'Name', 'Timeframe', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolRatio', 'InitialRR', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                    row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('tf', '5m'), cond['entry'], rt_price, pnl_pct, meta.get('vol_ratio', 0), meta.get('actual_rr', 0), meta.get('macro_pct', 0.0), hold_sec, mfe_pct, reason]
-                                    await asyncio.to_thread(write_trade_log, 'ob_log.csv', headers, row)
-                                    
-                                del auto_watch_list[code]
-                                if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
-                                state_changed = True
-                            else:
-                                await send_tg_message(f"❌ [{stock_name}] 최종 매도 실패. 좀비 부활 방지를 위해 감시 목록에서 즉시 도려냅니다.\n• 사유: {sell_res}")
-                                del auto_watch_list[code]
-                                if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
-                                state_changed = True
+                            del auto_watch_list[code]
+                            if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
+                            state_changed = True
+                        else:
+                            await send_tg_message(f"❌ [{stock_name}] 최종 손절 매도 실패.\n사유: {sell_res}")
+                            del auto_watch_list[code]
+                            if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
+                            state_changed = True
                     
                 if state_changed: await save_watch_list(redis_client, auto_watch_list, use_redis)
-                
-                if user_settings.get('circuit_breaker_on', False):
-                    limit_amt = -(user_settings['risk_amount'] * 3) 
-                    if daily_realized_pnl <= limit_amt and not is_paused:
-                        is_paused = True
-                        await send_tg_message(f"🚨 [서킷 브레이커 발동] 금일 누적 손실({daily_realized_pnl:,}원)이 한도를 초과했습니다. 시드 보호를 위해 봇 전원을 강제 셧다운합니다.")
-
                 last_monitor_time = time.time()
             
             await asyncio.sleep(1)

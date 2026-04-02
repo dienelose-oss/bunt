@@ -30,16 +30,6 @@ def ceil_to_tick(price):
     tick = get_tick_size(price)
     return math.ceil(price / tick) * tick
 
-def optimize_entry_with_orderbook(base_entry, ask_vol, bid_vol):
-    if bid_vol > ask_vol * 1.5:
-        return base_entry + get_tick_size(base_entry)
-    return base_entry
-
-def calculate_trailing_stop(rt_price, current_sl, max_reached):
-    drop_limit = max_reached * 0.98
-    new_sl = max(current_sl, floor_to_tick(drop_limit))
-    return new_sl, max_reached
-
 def validate_stale_data(candles, today_str):
     if not candles: return False
     return candles[0]['time'].startswith(today_str)
@@ -80,7 +70,7 @@ def get_ema(closes_old_to_new, period):
     return ema
 
 # -----------------------------------------------------------------------------
-# 2. 제미나이 모멘텀 스캘핑 엔진 (자동 매매 - 진단 보고 기능 탑재)
+# 2. 제미나이 모멘텀 스캘핑 엔진 (자동 매매 - 코어 엔진)
 # -----------------------------------------------------------------------------
 def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filter_lvl=3):
     if not candles or len(candles) < 60: return False, {}
@@ -93,16 +83,14 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
     avg_vol = sum(recent_vols) / len(recent_vols) if recent_vols else 1
     if n1['volume'] < (avg_vol * 2.0): return False, {}
 
-    # 🚨 [팩트 반영] 상위 필터 조건 무조건 사전 계산
+    # 상위 필터 조건 검사
     vwap = calculate_vwap(candles, today_str)
     is_above_vwap = (n1['close'] >= vwap)
     is_long_trend = check_long_trend(candles, 60)
 
-    # 설정된 레벨에 따라 진입 차단
     if filter_lvl >= 2 and not is_above_vwap: return False, {}
     if filter_lvl >= 3 and not is_long_trend: return False, {}
     
-    # 🚨 상위 필터 미달 사유 기록 (데이터 수집용)
     fail_reasons = []
     if not is_above_vwap: fail_reasons.append("VWAP 하회(Lv.2 미달)")
     if not is_long_trend: fail_reasons.append("60선 역배열(Lv.3 미달)")
@@ -127,7 +115,7 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
             'entry_atr': round(atr, 2),
             'upper_tail_ratio': 0,
             'strategy': 'GEMINI',
-            'diag_msg': diag_msg # 텔레그램으로 보낼 진단 메시지 탑재
+            'diag_msg': diag_msg
         }
     }
 
@@ -183,121 +171,5 @@ def check_laptop_swing_model(candles, today_str, risk_amount, rr_ratio=2.0):
             'pullback_vol_ratio': round(n2['volume'] / max(recent_10_vols), 2),
             'entry_atr': round(atr, 2),
             'strategy': 'LAPTOP'
-        }
-    }
-
-# -----------------------------------------------------------------------------
-# 4. 정통 오더블럭 장악형 스윙 엔진 (수동)
-# -----------------------------------------------------------------------------
-def check_orderblock_engulfing(candles, today_str, rr_ratio=1.5):
-    if not candles or len(candles) < 60: return False, {}
-    n1 = candles[1]  
-    n2 = candles[2]  
-
-    if n2['close'] >= n2['open']: return False, {}
-    if n1['close'] <= n2['open'] or n1['open'] > n2['close']: return False, {}
-
-    vol_n1 = n1['volume']
-    vol_n2 = max(n2['volume'], 1)
-    if vol_n1 < (vol_n2 * 1.5): return False, {}
-
-    recent_lows = [c['low'] for c in candles[2:17]]
-    if n2['low'] > min(recent_lows): return False, {}
-
-    entry_price = n2['open'] 
-    
-    vwap = calculate_vwap(candles, today_str)
-    if entry_price < vwap: return False, {}
-
-    if not check_long_trend(candles, 60): return False, {}
-
-    atr = calculate_atr(candles, 14)
-    base_sl = min(n1['low'], n2['low'])
-    sl_price = floor_to_tick(base_sl - (atr * 0.5)) if atr > 0 else base_sl
-    if entry_price <= sl_price: return False, {}
-
-    recent_highs = [c['high'] for c in candles[3:18]]
-    swing_high = max(recent_highs)
-
-    math_tp = entry_price + (entry_price - sl_price) * rr_ratio
-    target_tp = min(swing_high, math_tp)
-
-    risk = entry_price - sl_price
-    reward = target_tp - entry_price
-    if risk <= 0: return False, {}
-    
-    actual_rr = reward / risk
-    if actual_rr < 1.0: return False, {}
-
-    return True, {
-        'time': n1['time'],
-        'entry_price': entry_price,
-        'sl_price': sl_price,
-        'dynamic_tp': int(target_tp),
-        'strategy': 'OB',
-        'meta': {
-            'vol_ratio': round(vol_n1 / vol_n2, 2),
-            'actual_rr': round(actual_rr, 2),
-            'strategy': 'OB'
-        }
-    }
-
-# -----------------------------------------------------------------------------
-# 5. BPR / IFVG 모델 스윙 엔진 (수동)
-# -----------------------------------------------------------------------------
-def check_bpr_ifvg_model(candles, today_str, rr_ratio=1.5):
-    if not candles or len(candles) < 60: return False, {}
-
-    n1 = candles[1]
-    n2 = candles[2]
-    n3 = candles[3]
-
-    date1 = n1['time'][:8]
-    date2 = n2['time'][:8]
-    date3 = n3['time'][:8]
-    if not (date1 == date2 == date3): return False, {}
-
-    if n1['low'] <= n3['high']: return False, {}
-        
-    fvg_top = n1['low']
-    fvg_bottom = n3['high']
-
-    vol_n2 = max(n2['volume'], 1)
-    vol_n3 = max(n3['volume'], 1)
-    if vol_n2 < (vol_n3 * 1.2): return False, {}
-
-    entry_price = fvg_top
-    vwap = calculate_vwap(candles, today_str)
-    if entry_price < vwap: return False, {}
-
-    if not check_long_trend(candles, 60): return False, {}
-
-    atr = calculate_atr(candles, 14)
-    sl_price = floor_to_tick(fvg_bottom - (atr * 0.5)) if atr > 0 else fvg_bottom
-    if entry_price <= sl_price: return False, {}
-
-    recent_highs = [c['high'] for c in candles[1:15]]
-    swing_high = max(recent_highs)
-
-    math_tp = entry_price + (entry_price - sl_price) * rr_ratio
-    target_tp = min(swing_high, math_tp)
-
-    risk = entry_price - sl_price
-    reward = target_tp - entry_price
-    if risk <= 0: return False, {}
-    
-    actual_rr = reward / risk
-    if actual_rr < 1.0: return False, {}
-
-    return True, {
-        'time': n1['time'],
-        'entry_price': entry_price,
-        'sl_price': sl_price,
-        'dynamic_tp': int(target_tp),
-        'strategy': 'BPR',
-        'meta': {
-            'vol_ratio': round(vol_n2 / vol_n3, 2),
-            'actual_rr': round(actual_rr, 2),
-            'strategy': 'BPR'
         }
     }

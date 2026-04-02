@@ -20,19 +20,53 @@ def send_message(msg, reply_markup=None, reply_to_message_id=None):
         
     for attempt in range(3):
         try:
-            # 🚨 대기 시간 5초 -> 10초로 연장
             res = requests.post(url, json=payload, timeout=10)
             data = res.json()
             if data.get('ok'):
                 return data['result'].get('message_id')
-            break # 성공 시 루프 즉시 탈출
+            break 
         except requests.exceptions.Timeout:
             print(f"⚠️ 텔레그램 텍스트 전송 지연 (재시도 {attempt+1}/3)")
-            time.sleep(1) # 1초 대기 후 재돌격
+            time.sleep(1) 
         except Exception as e:
             print(f"텔레그램 전송 실패: {e}")
             break
     return None
+
+def edit_message_text(msg_id, msg, reply_markup=None):
+    """기존 메시지 텍스트 갱신 (도배 방지용 라이브 대시보드)"""
+    url = f"{URL}/editMessageText"
+    payload = {
+        'chat_id': telegram_chat_id,
+        'message_id': msg_id,
+        'text': msg,
+        'parse_mode': 'Markdown'
+    }
+    if reply_markup:
+        payload['reply_markup'] = reply_markup
+        
+    for _ in range(3):
+        try:
+            res = requests.post(url, json=payload, timeout=10)
+            if res.json().get('ok'):
+                return True
+            break
+        except Exception:
+            time.sleep(1)
+    return False
+
+def pin_chat_message(msg_id):
+    """중요 메시지 최상단 고정"""
+    url = f"{URL}/pinChatMessage"
+    payload = {
+        'chat_id': telegram_chat_id,
+        'message_id': msg_id,
+        'disable_notification': True
+    }
+    try:
+        requests.post(url, json=payload, timeout=5)
+    except Exception:
+        pass
 
 def send_photo(photo_path, caption=""):
     """차트 이미지 전송 (타임아웃 30초 확장 및 3회 재시도)"""
@@ -42,12 +76,11 @@ def send_photo(photo_path, caption=""):
             with open(photo_path, 'rb') as photo:
                 payload = {'chat_id': telegram_chat_id, 'caption': caption}
                 files = {'photo': photo}
-                # 🚨 무거운 사진 대기 시간 10초 -> 30초로 연장
                 requests.post(url, data=payload, files=files, timeout=30)
-            break # 성공 시 루프 즉시 탈출
+            break 
         except requests.exceptions.Timeout:
             print(f"⚠️ 텔레그램 사진 업로드 지연 (재시도 {attempt+1}/3)")
-            time.sleep(2) # 2초 대기 후 재돌격
+            time.sleep(2) 
         except Exception as e:
             print(f"사진 전송 실패: {e}")
             break
@@ -89,6 +122,6 @@ def fetch_commands():
                     if cb_data:
                         commands.append(f"cb:{cb_data}")
     except Exception:
-        pass # 수신 지연 시 조용히 무시 (엔진 속도 유지)
+        pass 
         
     return commands
