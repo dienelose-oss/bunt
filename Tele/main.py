@@ -220,6 +220,7 @@ async def main():
     last_scan_time = 0
     last_asset_record_time = 0
     last_auto_chart_time = 0
+    last_sync_time = 0 # 🚨 잔고 자동 동기화 타이머 추가
     
     last_cleared_hour = None
     last_daily_reset_date = None
@@ -242,7 +243,6 @@ async def main():
         for code in auto_watch_list.keys():
             await kiwoom_api.ws_client.subscribe(code)
 
-        # 🚨 시스템 시작 시 메인 대시보드 자동 팝업
         welcome_msg = f"🤖 [자동매매 시스템 가동 시작]\n초기화를 완료했습니다. 아래 대시보드에서 시스템을 통제하십시오."
         dash_reply_markup = {
             "inline_keyboard": [
@@ -259,7 +259,6 @@ async def main():
             now = datetime.now(KST) 
             today_str = now.strftime('%Y%m%d')
             
-            # 데일리 리셋
             if now.hour == 7 and now.minute == 55 and last_daily_reset_date != today_str:
                 asset_history.clear()    
                 max_assets_today = 0
@@ -324,6 +323,26 @@ async def main():
 • 15시 20분 D-2 예수금 및 종가 보유 상태 자동 기록 (미수 방어용)"""
                         await send_tg_message(help_msg)
                         continue
+                    
+                    # 🚨 잔고 강제 동기화 (수동 매도 목록 정리) 버튼 로직 추가
+                    elif cb_data == 'sync_holdings':
+                        holdings = await kiwoom_api.get_holdings_data(session)
+                        if holdings is None:
+                            await send_tg_message("❌ 잔고 데이터를 수신하지 못했습니다. API 연결 상태를 확인하세요.")
+                        else:
+                            removed = 0
+                            for code in list(auto_watch_list.keys()):
+                                if code not in holdings or holdings[code].get('qty', 0) == 0:
+                                    del auto_watch_list[code]
+                                    if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
+                                    removed += 1
+                            if removed > 0:
+                                await save_watch_list(redis_client, auto_watch_list, use_redis)
+                                await send_tg_message(f"✅ 동기화 완료! 실제 잔고에 없는 {removed}개 종목을 감시 목록에서 삭제했습니다.")
+                            else:
+                                await send_tg_message("✅ 감시 목록과 실제 계좌 잔고가 완벽히 일치합니다.")
+                        continue
+                        
                     elif cb_data == 'menu_watch':
                         watchlist = user_settings.get('custom_watchlist', {})
                         msg = f"📈 [관심종목 관리] (현재 {len(watchlist)}/10개)\n\n"
@@ -621,11 +640,31 @@ async def main():
                             engine_str = "제미나이 스캘핑" if cond.get('is_gemini') else "랩탑 스윙"
                             qty_str = f"({cond.get('qty', 0)}주)"
                             watch_msg += f"🔹 {cond.get('name', code)} {qty_str} - {engine_str} / {status_str}\n"
-                        await send_tg_message(watch_msg)
+                        
+                        # 🚨 [추가] 잔고 강제 동기화 버튼 표시
+                        reply_markup = {"inline_keyboard": [[{"text": "♻️ 잔고 강제 동기화 (수동매도 정리)", "callback_data": "sync_holdings"}]]}
+                        await send_tg_message(watch_msg, reply_markup=reply_markup)
                     continue
 
             is_weekend = (now.weekday() >= 5)
             is_active_day = not is_weekend and not is_paused
+            
+            # 🚨 [신규] 백그라운드 잔고 자동 동기화 로직 (60초 주기)
+            if is_active_day and (current_timestamp - last_sync_time > 60):
+                if auto_watch_list:
+                    holdings = await kiwoom_api.get_holdings_data(session)
+                    if holdings is not None:
+                        state_changed = False
+                        for code, cond in list(auto_watch_list.items()):
+                            # 진입 후 60초가 지난 종목만 검사 (매수 체결 딜레이로 인한 오작동 방지)
+                            if current_timestamp - cond.get('entry_time', current_timestamp) > 60:
+                                if code not in holdings or holdings[code].get('qty', 0) == 0:
+                                    await send_tg_message(f"♻️ [상태 동기화] {cond.get('name', code)} 수동 매도 감지. 감시 목록에서 자동 제거합니다.")
+                                    del auto_watch_list[code]
+                                    if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
+                                    state_changed = True
+                        if state_changed: await save_watch_list(redis_client, auto_watch_list, use_redis)
+                last_sync_time = current_timestamp
             
             scan_end_time = dt_time(20, 0) if user_settings.get('nxt_scan_enabled', False) else dt_time(15, 30)
             is_scan_time = (dt_time(9, 0) <= now.time() <= scan_end_time) and is_active_day
@@ -740,7 +779,6 @@ async def main():
                                                 buy_res, odno = await kiwoom_api.buy_limit_order(session, code, qty, entry)
                                                 if "✅" in buy_res:
                                                     gemini_data['meta']['macro_pct'] = current_macro_pct 
-                                                    # 🚨 진입 수량(qty) 명시적 기록
                                                     auto_watch_list[code] = {'name': stock_dict[code], 'qty': qty, 'entry': entry, 'sl': gemini_data['sl_price'], 'tp': gemini_data['dynamic_tp'], 'status': 'pending', 'odno': odno, 'is_gemini': True, 'meta': gemini_data['meta'], 'entry_time': time.time()}
                                                     await save_watch_list(redis_client, auto_watch_list, use_redis)
                                                     if kiwoom_api.ws_client: await kiwoom_api.ws_client.subscribe(code)
@@ -771,7 +809,6 @@ async def main():
                                                 buy_res, odno = await kiwoom_api.buy_limit_order(session, code, qty, entry)
                                                 if "✅" in buy_res:
                                                     lap_data['meta']['macro_pct'] = current_macro_pct 
-                                                    # 🚨 진입 수량(qty) 명시적 기록
                                                     auto_watch_list[code] = {'name': stock_dict[code], 'qty': qty, 'entry': entry, 'sl': lap_data['sl_price'], 'tp': lap_data['dynamic_tp'], 'status': 'pending', 'odno': odno, 'is_laptop': True, 'meta': lap_data['meta'], 'entry_time': time.time()}
                                                     await save_watch_list(redis_client, auto_watch_list, use_redis)
                                                     if kiwoom_api.ws_client: await kiwoom_api.ws_client.subscribe(code)
@@ -797,7 +834,6 @@ async def main():
                         state_changed = True
                         await send_tg_message(f"🟢 [{stock_name}] 감시 활성화 (웹소켓 연결 완료).")
                     
-                    # 🚨 심플하고 강력한 시장가 매도 로직 (오류 해결)
                     if cond['tp'] > 0 and rt_price >= cond['tp']:
                         sell_qty = cond.get('qty', 1) 
                         sell_res = await kiwoom_api.sell_market_order(session, code, sell_qty)
@@ -822,7 +858,7 @@ async def main():
                             state_changed = True
                         else:
                             await send_tg_message(f"⚠️ [{stock_name}] 익절 실패! 수동 확인 요망.\n결과: {sell_res}")
-                            cond['tp'] = 0 # 중복 매도 방지
+                            cond['tp'] = 0 
                             state_changed = True
 
                     elif cond['sl'] > 0 and rt_price <= cond['sl']:

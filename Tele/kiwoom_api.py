@@ -218,8 +218,7 @@ async def buy_limit_order(session, stock_code, qty, price):
         'stk_cd': stock_code, 
         'ord_qty': str(qty), 
         'ord_uv': str(price), 
-        'trde_tp': '00', 
-        'ord_tp': '1', 
+        'trde_tp': '0',   # 🚨 지정가(보통) 매수: '0'
         'cond_uv': '0'
     }
     res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10000', params)
@@ -246,16 +245,12 @@ async def cancel_order(session, stock_code, orgn_odno):
     params = {
         'dmst_stex_tp': 'AUTO', 
         'stk_cd': stock_code, 
-        'ord_qty': '0', 
-        'ord_uv': '0', 
-        'trde_tp': '00', 
-        'ord_tp': '3',
-        'RVSE_CNCL_DVSN_CD': '02', 
-        'cond_uv': '0',
-        'orgn_odno': str(orgn_odno),     
-        'orig_ord_no': str(orgn_odno)    
+        'orig_ord_no': str(orgn_odno), # 원주문번호
+        'cncl_qty': '0',               # 0: 전량취소
+        'cncl_uv': '0'
     }
-    res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10002', params)
+    # 🚨 kt10002(정정) -> kt10003(취소주문)으로 공식 엔드포인트 변경
+    res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10003', params)
     
     if res and str(res.get('return_code', res.get('rt_cd', '1'))) == '0':
         return f"✅ [{stock_code}] 미체결 취소 완료"
@@ -271,8 +266,7 @@ async def sell_market_order(session, stock_code, qty):
         'stk_cd': stock_code, 
         'ord_qty': str(qty), 
         'ord_uv': '0', 
-        'trde_tp': '01', 
-        'ord_tp': '2', 
+        'trde_tp': '3',   # 🚨 시장가 매도: '3' (기존 '01'에서 수정)
         'cond_uv': '0'
     }
     res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10001', params)
@@ -291,8 +285,7 @@ async def sell_limit_order(session, stock_code, qty, price):
         'stk_cd': stock_code, 
         'ord_qty': str(qty), 
         'ord_uv': str(int(price)), 
-        'trde_tp': '00', 
-        'ord_tp': '2', 
+        'trde_tp': '0',   # 🚨 지정가(보통) 매도: '0'
         'cond_uv': '0'
     }
     res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10001', params)
