@@ -21,3 +21,5 @@ socket_url = paper_socket_url if is_paper_trading else real_socket_url
 
 telegram_chat_id = "6147437980"
 telegram_token = "8772810107:AAFqJ5aNzyEgLOzx7FemlAXnAs7T2orkO-k"	
+
+ACCOUNT_NO = "62201760"

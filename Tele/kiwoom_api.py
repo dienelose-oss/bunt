@@ -1,28 +1,23 @@
 import time
-import json
-import asyncio
 import aiohttp
+import asyncio
+import json
 from datetime import datetime, time as dt_time
 from config import host_url
 from login import fn_au10001 as get_token
 
-_CACHED_TOKEN = None
-_TOKEN_EXPIRY = 0
+# --- 캐싱 로직 제거됨 (B Code 방식과 동일하게 매번 갱신/확인) ---
+# _CACHED_TOKEN = None
+# _TOKEN_EXPIRY = 0
 
-# --- 실시간 웹소켓 전용 전역 변수 ---
+# --- 웹소켓 전용 전역 변수 ---
 realtime_prices = {}
 ws_client = None
 _ws_approval_key = None
 
 def get_valid_token():
-    global _CACHED_TOKEN, _TOKEN_EXPIRY
-    current_time = time.time()
-    
-    if _CACHED_TOKEN is None or current_time > _TOKEN_EXPIRY:
-        _CACHED_TOKEN = get_token()
-        _TOKEN_EXPIRY = current_time + 21600  # 6시간 캐싱
-        
-    return _CACHED_TOKEN
+    # B Code와 동일하게 매 통신마다 최신/유효 토큰을 가져오도록 롤백
+    return get_token()
 
 async def _request_api(session, endpoint, api_id, params, use_get=False):
     url = host_url + endpoint
@@ -42,28 +37,16 @@ async def _request_api(session, endpoint, api_id, params, use_get=False):
     }
 
     try:
+        # 핵심 변경점: content_type=None 옵션을 부여하여 서버 응답 헤더 무시하고 강제 JSON 파싱 (B Code의 requests와 동일한 효과)
         if use_get:
             async with session.get(url, headers=headers, params=params, timeout=5) as response:
-                return await response.json(), exchange_tp
+                return await response.json(content_type=None), exchange_tp
         else:
             async with session.post(url, headers=headers, json=params, timeout=5) as response:
-                return await response.json(), exchange_tp
+                return await response.json(content_type=None), exchange_tp
     except Exception as e:
         print(f"API 통신 오류 [{api_id}]: {e}")
         return None, exchange_tp
-
-# 🚨 방탄 파싱(Bulletproof Parsing) 로직
-def safe_int(val):
-    try:
-        return int(float(str(val).replace(',', '').strip() or '0'))
-    except Exception:
-        return 0
-
-def safe_float(val):
-    try:
-        return float(str(val).replace(',', '').strip() or '0.0')
-    except Exception:
-        return 0.0
 
 # --- 실시간 웹소켓(WebSocket) 매니저 클래스 ---
 async def init_websocket_keys(session):
@@ -77,7 +60,7 @@ async def init_websocket_keys(session):
         url = h_url + '/oauth2/Approval'
         data = {"grant_type": "client_credentials", "appkey": app_key, "secretkey": app_secret}
         async with session.post(url, json=data) as res:
-            rj = await res.json()
+            rj = await res.json(content_type=None)
             _ws_approval_key = rj.get('approval_key')
     except Exception as e:
         print(f"웹소켓 키 초기화 실패 (config.py 확인 요망): {e}")
@@ -143,28 +126,27 @@ class KISWebSocket:
         if code in realtime_prices:
             del realtime_prices[code]
 
-# --- REST API 엔드포인트 함수 모음 ---
 async def get_estimated_assets(session):
     res, _ = await _request_api(session, '/api/dostk/acnt', 'kt00004', {'qry_tp': '0', 'dmst_stex_tp': 'AUTO'})
     if not res or ('return_code' in res and str(res['return_code']) != '0'):
         return None
-    return safe_int(res.get('prsm_dpst_aset_amt', res.get('tot_est_amt', '0')))
+    return int(res.get('prsm_dpst_aset_amt', res.get('tot_est_amt', '0')))
 
 async def get_orderable_cash(session):
     res, _ = await _request_api(session, '/api/dostk/acnt', 'kt00004', {'qry_tp': '0', 'dmst_stex_tp': 'AUTO'})
     if not res or ('return_code' in res and str(res['return_code']) != '0'):
         return 0
-    return safe_int(res.get('d2_entra', '0'))
+    return int(res.get('d2_entra', '0'))
 
 async def get_account_balance(session):
     res, extp = await _request_api(session, '/api/dostk/acnt', 'kt00004', {'qry_tp': '0', 'dmst_stex_tp': 'AUTO'})
     if not res or ('return_code' in res and str(res['return_code']) != '0'):
         return f"❌ 잔고 조회 실패: {res.get('return_msg', '응답 없음') if res else '통신오류'}"
 
-    d2_deposit = safe_int(res.get('d2_entra', '0'))
-    estimated_assets = safe_int(res.get('prsm_dpst_aset_amt', '0'))
-    total_profit = safe_int(res.get('lspft', '0'))
-    profit_rate = safe_float(res.get('lspft_rt', '0'))
+    d2_deposit = int(res.get('d2_entra', '0'))
+    estimated_assets = int(res.get('prsm_dpst_aset_amt', '0'))
+    total_profit = int(res.get('lspft', '0'))
+    profit_rate = float(res.get('lspft_rt', '0'))
     
     msg = f"📊 [현재 계좌 잔고]\n"
     msg += f"• 추정자산: {estimated_assets:,}원\n"
@@ -176,12 +158,12 @@ async def get_account_balance(session):
     
     valid_count = 0
     for stk in res.get('stk_acnt_evlt_prst', []):
-        qty = safe_int(stk.get('rmnd_qty', '0'))
+        qty = int(stk.get('rmnd_qty', '0'))
         if qty > 0:
             valid_count += 1
             name = stk.get('stk_nm', '').strip()
-            pl_amt = safe_int(stk.get('pl_amt', '0'))
-            pl_rt = safe_float(stk.get('pl_rt', '0'))
+            pl_amt = int(stk.get('pl_amt', '0'))
+            pl_rt = float(stk.get('pl_rt', '0'))
             s_sign = "+" if pl_amt > 0 else ""
             msg += f"• {name} : {qty:,}주 ({s_sign}{pl_rt}%, {s_sign}{pl_amt:,}원)\n"
             
@@ -197,16 +179,15 @@ async def get_holdings_data(session):
 
     holdings = {}
     for stk in res.get('stk_acnt_evlt_prst', []):
-        qty = safe_int(stk.get('rmnd_qty', '0'))
+        qty = int(stk.get('rmnd_qty', '0'))
         if qty > 0:
             raw_code = stk.get('pdno', stk.get('stk_cd', '')).strip()
             code = raw_code[1:] if raw_code.startswith('A') else raw_code
             name = stk.get('stk_nm', '').strip()
-            prpr = safe_int(stk.get('prpr', '0'))
-            evlt_amt = safe_int(stk.get('evlt_amt', '0'))
+            prpr = int(stk.get('prpr', '0'))
             
-            if prpr == 0 and evlt_amt > 0:
-                prpr = evlt_amt // qty
+            if prpr == 0 and int(stk.get('evlt_amt', '0')) > 0:
+                prpr = int(stk.get('evlt_amt', '0')) // qty
                 
             holdings[code] = {'name': name, 'prpr': prpr, 'qty': qty}
             
@@ -218,7 +199,8 @@ async def buy_limit_order(session, stock_code, qty, price):
         'stk_cd': stock_code, 
         'ord_qty': str(qty), 
         'ord_uv': str(price), 
-        'trde_tp': '0',   # 🚨 지정가(보통) 매수: '0'
+        'trde_tp': '00', 
+        'ord_tp': '1', 
         'cond_uv': '0'
     }
     res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10000', params)
@@ -231,34 +213,31 @@ async def buy_limit_order(session, stock_code, qty, price):
             odno = output.get('ord_no', output.get('ordNo', res.get('ord_no', '')))
             
         if not odno:
-            raw_data = str(res)[:300]
+            raw_data = str(res)[:200]
             return f"⚠️ [{stock_code}] {qty}주 매수 접수 성공.\n(경고: 주문번호 추출 실패. 데이터: {raw_data})", ""
             
         return f"✅ [{stock_code}] {qty}주 / {price:,}원 지정가 매수 접수. (ODNO: {odno})", odno
         
-    raw_res = str(res)[:300] if res else "응답없음"
-    msg_cd = res.get('msg_cd', res.get('return_code', '알수없음')) if res else ""
-    msg1 = res.get('msg1', res.get('return_msg', '')) if res else ""
-    return f"❌ 매수 실패\n• 코드: {msg_cd}\n• 사유: {msg1}\n• 원본: {raw_res}", None
+    return f"❌ 매수 실패: {res.get('return_msg', res.get('msg1', '응답없음'))}", None
 
 async def cancel_order(session, stock_code, orgn_odno):
     params = {
         'dmst_stex_tp': 'AUTO', 
         'stk_cd': stock_code, 
-        'orig_ord_no': str(orgn_odno), # 원주문번호
-        'cncl_qty': '0',               # 0: 전량취소
-        'cncl_uv': '0'
+        'ord_qty': '0', 
+        'ord_uv': '0', 
+        'trde_tp': '00', 
+        'ord_tp': '3',
+        'RVSE_CNCL_DVSN_CD': '02', 
+        'cond_uv': '0',
+        'orgn_odno': str(orgn_odno),     
+        'orig_ord_no': str(orgn_odno)    
     }
-    # 🚨 kt10002(정정) -> kt10003(취소주문)으로 공식 엔드포인트 변경
-    res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10003', params)
+    res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10002', params)
     
     if res and str(res.get('return_code', res.get('rt_cd', '1'))) == '0':
         return f"✅ [{stock_code}] 미체결 취소 완료"
-        
-    raw_res = str(res)[:300] if res else "응답없음"
-    msg_cd = res.get('msg_cd', res.get('return_code', '알수없음')) if res else ""
-    msg1 = res.get('msg1', res.get('return_msg', '')) if res else ""
-    return f"❌ 취소 실패\n• 코드: {msg_cd}\n• 사유: {msg1}\n• 원본: {raw_res}"
+    return f"❌ 취소 실패: {res.get('return_msg', res.get('msg1', '오류'))}"
 
 async def sell_market_order(session, stock_code, qty):
     params = {
@@ -266,18 +245,16 @@ async def sell_market_order(session, stock_code, qty):
         'stk_cd': stock_code, 
         'ord_qty': str(qty), 
         'ord_uv': '0', 
-        'trde_tp': '3',   # 🚨 시장가 매도: '3' (기존 '01'에서 수정)
+        'trde_tp': '01', 
+        'ord_tp': '2', 
         'cond_uv': '0'
     }
     res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10001', params)
     
-    if res and str(res.get('return_code', res.get('rt_cd', '1'))) == '0':
+    if res and str(res.get('return_code')) == '0':
         return f"✅ [{stock_code}] {qty}주 시장가 매도 완료"
         
-    raw_res = str(res)[:300] if res else "응답없음"
-    msg_cd = res.get('msg_cd', res.get('return_code', '알수없음')) if res else ""
-    msg1 = res.get('msg1', res.get('return_msg', '')) if res else ""
-    return f"❌ 매도 실패\n• 코드: {msg_cd}\n• 사유: {msg1}\n• 원본: {raw_res}"
+    return f"❌ 매도 실패: 에러코드 {res.get('return_code', '오류')} / 사유: {res.get('return_msg', '응답없음')}"
 
 async def sell_limit_order(session, stock_code, qty, price):
     params = {
@@ -285,18 +262,16 @@ async def sell_limit_order(session, stock_code, qty, price):
         'stk_cd': stock_code, 
         'ord_qty': str(qty), 
         'ord_uv': str(int(price)), 
-        'trde_tp': '0',   # 🚨 지정가(보통) 매도: '0'
+        'trde_tp': '00', 
+        'ord_tp': '2', 
         'cond_uv': '0'
     }
     res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10001', params)
     
-    if res and str(res.get('return_code', res.get('rt_cd', '1'))) == '0':
+    if res and str(res.get('return_code')) == '0':
         return f"✅ [{stock_code}] {qty}주 지정가({int(price):,}원) 매도 접수 완료"
         
-    raw_res = str(res)[:300] if res else "응답없음"
-    msg_cd = res.get('msg_cd', res.get('return_code', '알수없음')) if res else ""
-    msg1 = res.get('msg1', res.get('return_msg', '')) if res else ""
-    return f"❌ 2차 매도 실패\n• 코드: {msg_cd}\n• 사유: {msg1}\n• 원본: {raw_res}"
+    return f"❌ 2차 매도 실패: 에러코드 {res.get('return_code', '오류')} / 사유: {res.get('return_msg', '응답없음')}"
 
 async def get_top_20_search_rank(session):
     res, _ = await _request_api(session, '/api/dostk/stkinfo', 'ka00198', {'qry_tp': '1'})
@@ -337,13 +312,17 @@ async def get_candles(session, stock_code, tic_scope):
 
     parsed = []
     for c in res.get('stk_min_pole_chart_qry', []):
-        vol = safe_int(c.get('trde_qty', '0'))
+        try: 
+            vol = int(str(c.get('trde_qty', '0')).replace(',', '').replace('+', '').replace('-', ''))
+        except: 
+            vol = 0
+            
         parsed.append({
             'time': c.get('cntr_tm', ''), 
-            'open': abs(safe_int(c.get('open_pric', '0'))),
-            'close': abs(safe_int(c.get('cur_prc', '0'))), 
-            'high': abs(safe_int(c.get('high_pric', '0'))),
-            'low': abs(safe_int(c.get('low_pric', '0'))), 
+            'open': abs(int(str(c.get('open_pric', '0')).strip() or '0')),
+            'close': abs(int(str(c.get('cur_prc', '0')).strip() or '0')), 
+            'high': abs(int(str(c.get('high_pric', '0')).strip() or '0')),
+            'low': abs(int(str(c.get('low_pric', '0')).strip() or '0')), 
             'volume': vol
         })
     return parsed
@@ -355,11 +334,11 @@ async def get_orderbook(session, stock_code):
     }
     res, _ = await _request_api(session, '/api/dostk/hoga', 'ka10081', params)
     if not res: 
-        return 0, 0, 0, 0 
+        return 0, 0, 0, 0
         
-    ask_vol = safe_int(res.get('tot_sell_ho_remn', '0'))
-    bid_vol = safe_int(res.get('tot_buy_ho_remn', '0'))
-    ask_price = safe_int(res.get('sell_ho_prc1', '0'))
-    bid_price = safe_int(res.get('buy_ho_prc1', '0'))
+    ask_vol = int(str(res.get('tot_sell_ho_remn', '0')).strip() or '0')
+    bid_vol = int(str(res.get('tot_buy_ho_remn', '0')).strip() or '0')
+    ask_price = int(str(res.get('sell_ho_prc1', '0')).strip() or '0')
+    bid_price = int(str(res.get('buy_ho_prc1', '0')).strip() or '0')
     
     return ask_vol, bid_vol, ask_price, bid_price

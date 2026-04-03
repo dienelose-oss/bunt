@@ -220,7 +220,7 @@ async def main():
     last_scan_time = 0
     last_asset_record_time = 0
     last_auto_chart_time = 0
-    last_sync_time = 0 # 🚨 잔고 자동 동기화 타이머 추가
+    last_sync_time = 0
     
     last_cleared_hour = None
     last_daily_reset_date = None
@@ -324,7 +324,6 @@ async def main():
                         await send_tg_message(help_msg)
                         continue
                     
-                    # 🚨 잔고 강제 동기화 (수동 매도 목록 정리) 버튼 로직 추가
                     elif cb_data == 'sync_holdings':
                         holdings = await kiwoom_api.get_holdings_data(session)
                         if holdings is None:
@@ -641,7 +640,6 @@ async def main():
                             qty_str = f"({cond.get('qty', 0)}주)"
                             watch_msg += f"🔹 {cond.get('name', code)} {qty_str} - {engine_str} / {status_str}\n"
                         
-                        # 🚨 [추가] 잔고 강제 동기화 버튼 표시
                         reply_markup = {"inline_keyboard": [[{"text": "♻️ 잔고 강제 동기화 (수동매도 정리)", "callback_data": "sync_holdings"}]]}
                         await send_tg_message(watch_msg, reply_markup=reply_markup)
                     continue
@@ -649,14 +647,12 @@ async def main():
             is_weekend = (now.weekday() >= 5)
             is_active_day = not is_weekend and not is_paused
             
-            # 🚨 [신규] 백그라운드 잔고 자동 동기화 로직 (60초 주기)
             if is_active_day and (current_timestamp - last_sync_time > 60):
                 if auto_watch_list:
                     holdings = await kiwoom_api.get_holdings_data(session)
                     if holdings is not None:
                         state_changed = False
                         for code, cond in list(auto_watch_list.items()):
-                            # 진입 후 60초가 지난 종목만 검사 (매수 체결 딜레이로 인한 오작동 방지)
                             if current_timestamp - cond.get('entry_time', current_timestamp) > 60:
                                 if code not in holdings or holdings[code].get('qty', 0) == 0:
                                     await send_tg_message(f"♻️ [상태 동기화] {cond.get('name', code)} 수동 매도 감지. 감시 목록에서 자동 제거합니다.")
@@ -773,6 +769,7 @@ async def main():
                                         if alert_key not in alerted_obs:
                                             alerted_obs.add(alert_key)
                                             await save_alerted_obs(alerted_obs)
+                                            # 🚨 [수정] 대기 매수가(Entry) 적용
                                             entry = gemini_data['entry_price']
                                             qty = user_settings.get('gemini_amount', 500000) // entry
                                             if qty > 0:
@@ -782,10 +779,11 @@ async def main():
                                                     auto_watch_list[code] = {'name': stock_dict[code], 'qty': qty, 'entry': entry, 'sl': gemini_data['sl_price'], 'tp': gemini_data['dynamic_tp'], 'status': 'pending', 'odno': odno, 'is_gemini': True, 'meta': gemini_data['meta'], 'entry_time': time.time()}
                                                     await save_watch_list(redis_client, auto_watch_list, use_redis)
                                                     if kiwoom_api.ws_client: await kiwoom_api.ws_client.subscribe(code)
-                                                    msg = f"🤖 [제미나이 자동매수] {stock_dict[code]} {qty}주 완료\n"
-                                                    msg += f"• 매수가: {entry:,}원\n"
-                                                    msg += f"• 목표가: {gemini_data['dynamic_tp']:,}원 (+{user_settings.get('gemini_tp_pct', 1.5)}%)\n"
-                                                    msg += f"• 손절가: {gemini_data['sl_price']:,}원 (-{user_settings.get('gemini_sl_pct', 1.0)}%)\n"
+                                                    # 🚨 [수정] 출력 메시지 명확화
+                                                    msg = f"🤖 [제미나이 눌림목 대기매수] {stock_dict[code]} {qty}주\n"
+                                                    msg += f"• 대기 매수가: {entry:,}원 (지정가)\n"
+                                                    msg += f"• 체결 시 목표가: {gemini_data['dynamic_tp']:,}원 (+{user_settings.get('gemini_tp_pct', 1.5)}%)\n"
+                                                    msg += f"• 체결 시 손절가: {gemini_data['sl_price']:,}원 (-{user_settings.get('gemini_sl_pct', 1.0)}%)\n"
                                                     msg += f"• 진단: {gemini_data['meta'].get('diag_msg', '확인불가')}"
                                                     await send_tg_message(msg)
                                             continue 
@@ -803,6 +801,7 @@ async def main():
                                         if alert_key not in alerted_obs:
                                             alerted_obs.add(alert_key)
                                             await save_alerted_obs(alerted_obs)
+                                            # 🚨 [수정] 대기 매수가(Entry) 적용
                                             entry = lap_data['entry_price']
                                             qty = lap_data['qty'] 
                                             if qty > 0:
@@ -812,7 +811,7 @@ async def main():
                                                     auto_watch_list[code] = {'name': stock_dict[code], 'qty': qty, 'entry': entry, 'sl': lap_data['sl_price'], 'tp': lap_data['dynamic_tp'], 'status': 'pending', 'odno': odno, 'is_laptop': True, 'meta': lap_data['meta'], 'entry_time': time.time()}
                                                     await save_watch_list(redis_client, auto_watch_list, use_redis)
                                                     if kiwoom_api.ws_client: await kiwoom_api.ws_client.subscribe(code)
-                                                    await send_tg_message(f"💻 [랩탑 자동매수] {stock_dict[code]} {qty}주 완료")
+                                                    await send_tg_message(f"💻 [랩탑 스윙 대기매수] {stock_dict[code]} {qty}주 (매수가: {entry:,}원)")
                                         continue
                 last_scan_time = time.time()
 
@@ -830,9 +829,12 @@ async def main():
                     stock_name = cond.get('name', code)
                     
                     if cond['status'] == 'pending':
-                        cond['status'] = 'active'
-                        state_changed = True
-                        await send_tg_message(f"🟢 [{stock_name}] 감시 활성화 (웹소켓 연결 완료).")
+                        # 🚨 [중요] 눌림목 대기매수이므로, 실제 현재가가 '대기 매수가' 이하로 내려왔을 때만 체결(active)된 것으로 간주
+                        if rt_price <= cond['entry']:
+                            cond['status'] = 'active'
+                            state_changed = True
+                            await send_tg_message(f"🟢 [{stock_name}] 눌림목 매수 체결 확인! 감시 활성화.")
+                        continue # pending 상태일 때는 아래 익절/손절 로직을 스킵함
                     
                     if cond['tp'] > 0 and rt_price >= cond['tp']:
                         sell_qty = cond.get('qty', 1) 
