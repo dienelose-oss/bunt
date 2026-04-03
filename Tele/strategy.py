@@ -1,12 +1,38 @@
 import math
-import json
-import logging
-import kiwoom_api  # 미체결 및 잔고 조회를 위한 모듈
+from collections import deque
+from datetime import datetime
 
-logger = logging.getLogger(__name__)
+# -----------------------------------------------------------------------------
+# 0. 인메모리 캔들 엔진 (웹소켓 틱 기반 실시간 연산)
+# -----------------------------------------------------------------------------
+class CandleManager:
+    def __init__(self, max_len=100):
+        self.candles = {}  # {code: deque}
+        self.max_len = max_len
 
-# 상태 관리를 위한 파일명 정의
-WATCH_LIST_FILE = "watch_list_state.json"
+    def init_stock(self, code, past_candles):
+        if past_candles:
+            self.candles[code] = deque(past_candles[-self.max_len:], maxlen=self.max_len)
+
+    def update_tick(self, code, price, volume=0):
+        if code not in self.candles or not self.candles[code]: return
+        now_str = datetime.now().strftime('%Y%m%d%H%M%S')
+        last = self.candles[code][-1]
+        
+        # HHMM 기준 분이 변경되면 새 캔들을 생성하여 이음
+        if last['time'][8:12] != now_str[8:12]:
+            new_c = {'time': now_str, 'open': price, 'high': price, 'low': price, 'close': price, 'volume': volume}
+            self.candles[code].append(new_c)
+        else:
+            last['close'] = price
+            if price > last['high']: last['high'] = price
+            if price < last['low']: last['low'] = price
+            last['volume'] += volume
+
+    def get_ma(self, code, period):
+        if code not in self.candles or len(self.candles[code]) < period: return 0
+        closes = [c['close'] for c in list(self.candles[code])[-period:]]
+        return sum(closes) / period
 
 # -----------------------------------------------------------------------------
 # 1. 공통 퀀트 수학 및 호가창 유틸리티 모듈
@@ -37,6 +63,16 @@ def floor_to_tick(price):
 def ceil_to_tick(price):
     tick = get_tick_size(price)
     return math.ceil(price / tick) * tick
+
+def optimize_entry_with_orderbook(base_entry, ask_vol, bid_vol):
+    if bid_vol > ask_vol * 1.5:
+        return base_entry + get_tick_size(base_entry)
+    return base_entry
+
+def calculate_trailing_stop(rt_price, current_sl, max_reached):
+    drop_limit = max_reached * 0.98
+    new_sl = max(current_sl, floor_to_tick(drop_limit))
+    return new_sl, max_reached
 
 def validate_stale_data(candles, today_str):
     if not candles: return False
@@ -78,7 +114,7 @@ def get_ema(closes_old_to_new, period):
     return ema
 
 # -----------------------------------------------------------------------------
-# 2. 제미나이 모멘텀 스캘핑 엔진 (눌림목 대기 매수 로직 적용)
+# 2. 제미나이 모멘텀 스캘핑 엔진 (자동 매매 - 진단 보고 기능 탑재)
 # -----------------------------------------------------------------------------
 def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filter_lvl=3):
     if not candles or len(candles) < 60: return False, {}
@@ -91,54 +127,46 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
     avg_vol = sum(recent_vols) / len(recent_vols) if recent_vols else 1
     if n1['volume'] < (avg_vol * 2.0): return False, {}
 
-    # 상위 필터 조건 검사
+    # 🚨 [팩트 반영] 상위 필터 조건 무조건 사전 계산
     vwap = calculate_vwap(candles, today_str)
     is_above_vwap = (n1['close'] >= vwap)
     is_long_trend = check_long_trend(candles, 60)
 
+    # 설정된 레벨에 따라 진입 차단
     if filter_lvl >= 2 and not is_above_vwap: return False, {}
     if filter_lvl >= 3 and not is_long_trend: return False, {}
     
+    # 🚨 상위 필터 미달 사유 기록 (데이터 수집용)
     fail_reasons = []
     if not is_above_vwap: fail_reasons.append("VWAP 하회(Lv.2 미달)")
     if not is_long_trend: fail_reasons.append("60선 역배열(Lv.3 미달)")
     diag_msg = " + ".join(fail_reasons) if fail_reasons else "모든 조건 충족(Lv.3급 완벽)"
 
-    # 🚨 [수정] 현재가가 아닌 ATR 기반 손절가 우선 계산
-    current_price = n1['close']
+    entry_price = n1['close']
     atr = calculate_atr(candles, 14)
-    if atr == 0: return False, {}
+    math_sl = entry_price * (1 - (sl_pct / 100.0))
+    atr_sl = entry_price - (atr * 1.5) 
     
-    # 기본 ATR 1.5배수 손절선 계산 (호가 내림)
-    base_sl_price = floor_to_tick(current_price - (atr * 1.5))
-    
-    # 🚨 [수정] 계산된 손절선 위 1.0%(sl_pct) 지점을 '지정가 대기 매수가'로 역산
-    # 매수가 = 손절가 / (1 - 손절비율)
-    calc_entry_price = floor_to_tick(base_sl_price / (1 - (sl_pct / 100.0)))
-    
-    # 대기 매수가가 현재가(종가)보다 높거나 같으면 추격매수이므로 포기
-    if calc_entry_price >= current_price: return False, {}
-    
-    # 🚨 [수정] 최종 익절가(TP)는 '대기 매수가' 기준 +1.5%(tp_pct) 계산
-    tp_price = ceil_to_tick(calc_entry_price * (1 + (tp_pct / 100.0)))
+    sl_price = floor_to_tick(min(math_sl, atr_sl) if atr > 0 else math_sl)
+    tp_price = ceil_to_tick(entry_price * (1 + (tp_pct / 100.0)))
     
     return True, {
         'time': n1['time'],
-        'entry_price': calc_entry_price, # 눌림목 대기 매수가
-        'sl_price': base_sl_price,       # 최종 손절가
-        'dynamic_tp': tp_price,          # 최종 목표가
+        'entry_price': entry_price,
+        'sl_price': sl_price,
+        'dynamic_tp': tp_price,
         'strategy': 'GEMINI',
         'meta': {
             'vol_burst_ratio': round(n1['volume'] / avg_vol, 2),
             'entry_atr': round(atr, 2),
             'upper_tail_ratio': 0,
             'strategy': 'GEMINI',
-            'diag_msg': diag_msg
+            'diag_msg': diag_msg # 텔레그램으로 보낼 진단 메시지 탑재
         }
     }
 
 # -----------------------------------------------------------------------------
-# 3. 랩탑 스윙 엔진 (VWAP + 9/20 EMA 추세추종 - 눌림목 대기 매수 로직 적용)
+# 3. 랩탑 스윙 엔진 (VWAP + 9/20 EMA 추세추종 자동 매매)
 # -----------------------------------------------------------------------------
 def check_laptop_swing_model(candles, today_str, risk_amount, rr_ratio=2.0):
     if not candles or len(candles) < 40: return False, {}
@@ -166,35 +194,23 @@ def check_laptop_swing_model(candles, today_str, risk_amount, rr_ratio=2.0):
     
     if n2['volume'] > (max(recent_10_vols) * 0.7): return False, {}
 
-    # 🚨 [수정] 랩탑 엔진도 ATR 기반 손절선 먼저 계산
-    current_price = n1['close']
+    entry_price = n1['close']
     atr = calculate_atr(candles, 14)
-    if atr == 0: return False, {}
     
-    # 랩탑은 스윙이므로 ATR 2.0배수 손절선 계산
-    base_sl_price = floor_to_tick(current_price - (atr * 2.0))
-    if base_sl_price >= current_price: return False, {}
+    sl_price = floor_to_tick(entry_price - (atr * 2.0))
+    if sl_price >= entry_price: return False, {}
     
-    # 🚨 [수정] 손절선 위 1.0% 고정 리스크 지정가 매수가 산출
-    sl_pct = 1.0
-    calc_entry_price = floor_to_tick(base_sl_price / (1 - (sl_pct / 100.0)))
-    
-    # 대기 매수가가 현재가보다 높으면 포기
-    if calc_entry_price >= current_price: return False, {}
-    
-    # 진입가 기준 고정 리스크(%)를 금액(원)으로 환산하여 수량 계산
-    risk_per_share = calc_entry_price - base_sl_price
-    calc_qty = int(risk_amount // risk_per_share) if risk_per_share > 0 else 0
+    risk = entry_price - sl_price
+    calc_qty = int(risk_amount // risk) if risk > 0 else 0
     if calc_qty <= 0: return False, {}
 
-    # RR Ratio(손익비)에 따른 목표가 산출
-    tp_price = ceil_to_tick(calc_entry_price + (risk_per_share * rr_ratio))
+    tp_price = ceil_to_tick(entry_price + (risk * rr_ratio))
 
     return True, {
         'time': n1['time'],
-        'entry_price': calc_entry_price, # 눌림목 대기 매수가
-        'sl_price': base_sl_price,       # 최종 손절가
-        'dynamic_tp': tp_price,          # 최종 익절가
+        'entry_price': entry_price,
+        'sl_price': sl_price,
+        'dynamic_tp': tp_price,
         'qty': calc_qty, 
         'strategy': 'LAPTOP',
         'meta': {
@@ -205,77 +221,117 @@ def check_laptop_swing_model(candles, today_str, risk_amount, rr_ratio=2.0):
     }
 
 # -----------------------------------------------------------------------------
-# 4. 감시 리스트 및 미체결 동기화 모듈 (신규 추가)
+# 4. 정통 오더블럭 장악형 스윙 엔진 (수동)
 # -----------------------------------------------------------------------------
-def load_watch_list():
-    """감시 종목 리스트를 로드합니다."""
-    try:
-        with open(WATCH_LIST_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-    except Exception as e:
-        logger.error(f"감시 리스트 로드 오류: {e}")
-        return {}
+def check_orderblock_engulfing(candles, today_str, rr_ratio=1.5):
+    if not candles or len(candles) < 60: return False, {}
+    n1 = candles[1]  
+    n2 = candles[2]  
 
-def save_watch_list(data):
-    """감시 종목 리스트를 저장합니다."""
-    try:
-        with open(WATCH_LIST_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"감시 리스트 저장 오류: {e}")
+    if n2['close'] >= n2['open']: return False, {}
+    if n1['close'] <= n2['open'] or n1['open'] > n2['close']: return False, {}
 
-def sync_watch_list_with_balance(account_no):
-    """
-    현재 계좌 잔고와 '미체결 매수 내역'을 확인하여, 
-    잔고에도 없고 매수 대기 중이지도 않은 종목만 감시 리스트에서 삭제합니다.
-    """
-    watch_list = load_watch_list()
-    if not watch_list:
-        return
-        
-    # 1. 잔고 조회 (실제 api 모듈의 메서드명과 응답 구조에 맞춰 조정 필요)
-    balance_codes = []
-    try:
-        balance_data = kiwoom_api.get_balance(account_no)
-        # 키움 REST API 응답 예시: data["body"]["output1"] 가 잔고 리스트라고 가정
-        if balance_data and "body" in balance_data and "output1" in balance_data["body"]:
-            balance_items = balance_data["body"]["output1"]
-            balance_codes = [item.get("item_code") for item in balance_items if item.get("item_code")]
-    except AttributeError:
-        logger.warning("kiwoom_api.get_balance() 함수가 구현되지 않았습니다.")
-        
-    # 2. 미체결 매수 주문 내역 조회 (이전 단계에서 kiwoom_api에 추가하기로 한 함수)
-    pending_buy_codes = []
-    try:
-        pending_buy_codes = kiwoom_api.get_unexecuted_orders(account_no)
-    except AttributeError:
-        logger.warning("kiwoom_api.get_unexecuted_orders() 함수가 구현되지 않았습니다.")
+    vol_n1 = n1['volume']
+    vol_n2 = max(n2['volume'], 1)
+    if vol_n1 < (vol_n2 * 1.5): return False, {}
+
+    recent_lows = [c['low'] for c in candles[2:17]]
+    if n2['low'] > min(recent_lows): return False, {}
+
+    entry_price = n2['open'] 
     
-    # 3. 감시 리스트 검증 및 정리
-    items_to_remove = []
+    vwap = calculate_vwap(candles, today_str)
+    if entry_price < vwap: return False, {}
+
+    if not check_long_trend(candles, 60): return False, {}
+
+    atr = calculate_atr(candles, 14)
+    base_sl = min(n1['low'], n2['low'])
+    sl_price = floor_to_tick(base_sl - (atr * 0.5)) if atr > 0 else base_sl
+    if entry_price <= sl_price: return False, {}
+
+    recent_highs = [c['high'] for c in candles[3:18]]
+    swing_high = max(recent_highs)
+
+    math_tp = entry_price + (entry_price - sl_price) * rr_ratio
+    target_tp = min(swing_high, math_tp)
+
+    risk = entry_price - sl_price
+    reward = target_tp - entry_price
+    if risk <= 0: return False, {}
     
-    for code, info in watch_list.items():
-        if code in balance_codes:
-            # 잔고에 있음 -> 보유 상태로 업데이트
-            if info.get("status") != "OWNED":
-                info["status"] = "OWNED"
-                logger.info(f"[{code}] 상태 변경: -> OWNED (잔고 확인)")
-                
-        elif code in pending_buy_codes:
-            # 잔고에는 없지만 미체결 매수 대기 중 -> 삭제 방지 및 상태 업데이트
-            if info.get("status") != "PENDING_BUY":
-                info["status"] = "PENDING_BUY"
-                logger.info(f"[{code}] 상태 변경: -> PENDING_BUY (미체결 매수 대기 중, 감시 유지)")
-                
-        else:
-            # 잔고에도 없고 매수 대기 중이지도 않음 -> 삭제 대상
-            items_to_remove.append(code)
-            
-    # 조건 미달 종목 삭제 실행
-    for code in items_to_remove:
-        del watch_list[code]
-        logger.info(f"[{code}] 잔고 및 미체결 내역 없음. 감시 리스트에서 삭제됨.")
+    actual_rr = reward / risk
+    if actual_rr < 1.0: return False, {}
+
+    return True, {
+        'time': n1['time'],
+        'entry_price': entry_price,
+        'sl_price': sl_price,
+        'dynamic_tp': int(target_tp),
+        'strategy': 'OB',
+        'meta': {
+            'vol_ratio': round(vol_n1 / vol_n2, 2),
+            'actual_rr': round(actual_rr, 2),
+            'strategy': 'OB'
+        }
+    }
+
+# -----------------------------------------------------------------------------
+# 5. BPR / IFVG 모델 스윙 엔진 (수동)
+# -----------------------------------------------------------------------------
+def check_bpr_ifvg_model(candles, today_str, rr_ratio=1.5):
+    if not candles or len(candles) < 60: return False, {}
+
+    n1 = candles[1]
+    n2 = candles[2]
+    n3 = candles[3]
+
+    date1 = n1['time'][:8]
+    date2 = n2['time'][:8]
+    date3 = n3['time'][:8]
+    if not (date1 == date2 == date3): return False, {}
+
+    if n1['low'] <= n3['high']: return False, {}
         
-    save_watch_list(watch_list)
+    fvg_top = n1['low']
+    fvg_bottom = n3['high']
+
+    vol_n2 = max(n2['volume'], 1)
+    vol_n3 = max(n3['volume'], 1)
+    if vol_n2 < (vol_n3 * 1.2): return False, {}
+
+    entry_price = fvg_top
+    vwap = calculate_vwap(candles, today_str)
+    if entry_price < vwap: return False, {}
+
+    if not check_long_trend(candles, 60): return False, {}
+
+    atr = calculate_atr(candles, 14)
+    sl_price = floor_to_tick(fvg_bottom - (atr * 0.5)) if atr > 0 else fvg_bottom
+    if entry_price <= sl_price: return False, {}
+
+    recent_highs = [c['high'] for c in candles[1:15]]
+    swing_high = max(recent_highs)
+
+    math_tp = entry_price + (entry_price - sl_price) * rr_ratio
+    target_tp = min(swing_high, math_tp)
+
+    risk = entry_price - sl_price
+    reward = target_tp - entry_price
+    if risk <= 0: return False, {}
+    
+    actual_rr = reward / risk
+    if actual_rr < 1.0: return False, {}
+
+    return True, {
+        'time': n1['time'],
+        'entry_price': entry_price,
+        'sl_price': sl_price,
+        'dynamic_tp': int(target_tp),
+        'strategy': 'BPR',
+        'meta': {
+            'vol_ratio': round(vol_n2 / vol_n3, 2),
+            'actual_rr': round(actual_rr, 2),
+            'strategy': 'BPR'
+        }
+    }
