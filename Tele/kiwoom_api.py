@@ -6,6 +6,7 @@ from datetime import datetime, time as dt_time
 from config import host_url
 from login import fn_au10001 as get_token
 
+# --- 캐싱 로직 제거됨 (B Code 방식과 동일하게 매번 갱신/확인) ---
 # _CACHED_TOKEN = None
 # _TOKEN_EXPIRY = 0
 
@@ -15,7 +16,7 @@ ws_client = None
 _ws_approval_key = None
 
 def get_valid_token():
-    # 토큰 캐싱을 제거하고 동기 방식(B Code)과 동일하게 매 호출마다 최신 토큰 반환
+    # B Code와 동일하게 매 통신마다 최신/유효 토큰을 가져오도록 롤백
     return get_token()
 
 async def _request_api(session, endpoint, api_id, params, use_get=False):
@@ -36,6 +37,7 @@ async def _request_api(session, endpoint, api_id, params, use_get=False):
     }
 
     try:
+        # 핵심 변경점: content_type=None 옵션을 부여하여 서버 응답 헤더 무시하고 강제 JSON 파싱 (B Code의 requests와 동일한 효과)
         if use_get:
             async with session.get(url, headers=headers, params=params, timeout=5) as response:
                 return await response.json(content_type=None), exchange_tp
