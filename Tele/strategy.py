@@ -334,4 +334,4 @@ def check_bpr_ifvg_model(candles, today_str, rr_ratio=1.5):
             'actual_rr': round(actual_rr, 2),
             'strategy': 'BPR'
         }
-    }
+    } 
