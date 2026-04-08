@@ -400,9 +400,25 @@ async def main():
                             else:
                                 daily_req = needed_amt / rem_days
                                 daily_pct = (daily_req / current_assets) * 100 if current_assets > 0 else 0
+                                
+                                compound_rate = (target_amt / current_assets) ** (1 / rem_days) - 1
+                                compound_daily_req = current_assets * compound_rate
+                                compound_daily_pct = compound_rate * 100
+                                
+                                base_amount = user_settings.get('base_amount', current_assets)
+                                today_profit = current_assets - base_amount
+                                surplus_profit = today_profit - compound_daily_req
+                                surplus_str = f"+{int(surplus_profit):,}" if surplus_profit > 0 else f"{int(surplus_profit):,}"
+
                                 msg += f"• 남은 금액: {needed_amt:,}원\n\n"
-                                msg += f"🔥 **하루 목표 수익금**: {int(daily_req):,}원\n"
-                                msg += f"📈 **현 자산 대비 필요 수익률**: 하루 {daily_pct:.2f}%\n"
+                                
+                                msg += f"📌 **[단리 기준 (단순 평균)]**\n"
+                                msg += f"• 하루 평균 필요액: {int(daily_req):,}원 ({daily_pct:.2f}%)\n\n"
+                                
+                                msg += f"🔥 **[복리 기준 (오늘의 권장 목표)]**\n"
+                                msg += f"• 오늘 목표 수익금: {int(compound_daily_req):,}원 ({compound_daily_pct:.2f}%)\n"
+                                msg += f"• 오늘 실제 수익금: {int(today_profit):,}원\n"
+                                msg += f"👉 **목표 대비 초과/미달: {surplus_str}원**\n"
                                 
                             reply_markup = {
                                 "inline_keyboard": [
