@@ -136,10 +136,14 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
     if filter_lvl >= 2 and not is_above_vwap: return False, {}
     if filter_lvl >= 3 and not is_long_trend: return False, {}
     
-    # 🚨 상위 필터 미달 사유 기록 (데이터 수집용)
+    # 🚨 [추가된 로직] Safe-Zone: 폭발적인 빔을 쐈으나 이미 VWAP 대비 3% 초과 상승했다면 위험지대로 간주
     fail_reasons = []
     if not is_above_vwap: fail_reasons.append("VWAP 하회(Lv.2 미달)")
     if not is_long_trend: fail_reasons.append("60선 역배열(Lv.3 미달)")
+    if is_above_vwap and n1['close'] > vwap * 1.03: 
+        fail_reasons.append("VWAP 3% 이상 초과(추격매수 위험)")
+        return False, {}
+
     diag_msg = " + ".join(fail_reasons) if fail_reasons else "모든 조건 충족(Lv.3급 완벽)"
 
     entry_price = n1['close']
@@ -161,7 +165,7 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
             'entry_atr': round(atr, 2),
             'upper_tail_ratio': 0,
             'strategy': 'GEMINI',
-            'diag_msg': diag_msg # 텔레그램으로 보낼 진단 메시지 탑재
+            'diag_msg': diag_msg
         }
     }
 
@@ -178,6 +182,9 @@ def check_laptop_swing_model(candles, today_str, risk_amount, rr_ratio=2.0):
 
     vwap = calculate_vwap(candles, today_str)
     if n1['close'] < vwap or n2['close'] < vwap: return False, {}
+    
+    # 🚨 [추가된 로직] Safe-Zone: 스윙 특성상 안전마진 확보를 위해 VWAP과 2% 이상 벌어진 타점 차단
+    if n1['close'] > vwap * 1.02: return False, {}
     
     closes_old_to_new = [c['close'] for c in reversed(candles)]
     
@@ -334,4 +341,4 @@ def check_bpr_ifvg_model(candles, today_str, rr_ratio=1.5):
             'actual_rr': round(actual_rr, 2),
             'strategy': 'BPR'
         }
-    } 
+    }

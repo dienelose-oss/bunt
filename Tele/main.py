@@ -24,6 +24,7 @@ STATE_FILE = 'watch_list_state.json'
 ALERTED_OBS_FILE = 'alerted_obs.json'
 REDIS_WATCH_KEY = 'auto_watch_list'
 SNAPSHOT_FILE = 'd_minus_2_balance.json'
+HOLIDAY_FILE = 'krx_holidays.json'
 
 chart_lock = threading.Lock()
 KST = timezone(timedelta(hours=9))
@@ -36,6 +37,29 @@ def get_d_minus_2_date(current_date_str):
         if dt.weekday() < 5: 
             days_subtracted += 1
     return dt.strftime('%Y%m%d')
+
+def get_remaining_trading_days(start_date_str, target_date_str):
+    try:
+        start_dt = datetime.strptime(start_date_str, '%Y%m%d')
+        target_dt = datetime.strptime(target_date_str, '%Y-%m-%d')
+        
+        holidays = []
+        if os.path.exists(HOLIDAY_FILE):
+            with open(HOLIDAY_FILE, 'r', encoding='utf-8') as f:
+                holidays = json.load(f)
+                
+        days = 0
+        curr_dt = start_dt
+        while curr_dt < target_dt:
+            curr_dt += timedelta(days=1)
+            # 주말(토=5, 일=6) 제외
+            if curr_dt.weekday() < 5: 
+                # 외부 파일에 등록된 공휴일/휴장일 제외
+                if curr_dt.strftime('%Y-%m-%d') not in holidays:
+                    days += 1
+        return days
+    except Exception:
+        return 0
 
 async def load_persistent_state(redis_client):
     watch_list = {}
@@ -102,6 +126,8 @@ async def load_or_init_settings(session):
         'engine_laptop_on': True, 
         'time_filter_on': False,
         'auto_remove_unheld': False,
+        'target_date': '2026-12-20',
+        'target_amount': 100000000,
     }
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -250,7 +276,8 @@ async def main():
                 [{"text": "📈 관심종목 관리", "callback_data": "menu_watch"}, {"text": "👀 감시 현황", "callback_data": "menu_monitor"}],
                 [{"text": "💰 계좌 잔고", "callback_data": "menu_balance"}, {"text": "📊 누적 통계 분석", "callback_data": "menu_analysis"}],
                 [{"text": "⚙️ 엔진 세팅", "callback_data": "menu_setting"}, {"text": "💡 도움말", "callback_data": "menu_help"}],
-                [{"text": "💸 미수/반대매매 방어 (D-2)", "callback_data": "menu_margin_clear"}] 
+                [{"text": "💸 미수/반대매매 방어 (D-2)", "callback_data": "menu_margin_clear"}],
+                [{"text": "🎯 목표 달성 플래너", "callback_data": "menu_planner"}]
             ]
         }
         await send_tg_message(welcome_msg, reply_markup=dash_reply_markup)
@@ -287,7 +314,8 @@ async def main():
                                 [{"text": "📈 관심종목 관리", "callback_data": "menu_watch"}, {"text": "👀 감시 현황", "callback_data": "menu_monitor"}],
                                 [{"text": "💰 계좌 잔고", "callback_data": "menu_balance"}, {"text": "📊 누적 통계 분석", "callback_data": "menu_analysis"}],
                                 [{"text": "⚙️ 엔진 세팅", "callback_data": "menu_setting"}, {"text": "💡 도움말", "callback_data": "menu_help"}],
-                                [{"text": "💸 미수/반대매매 방어 (D-2)", "callback_data": "menu_margin_clear"}] 
+                                [{"text": "💸 미수/반대매매 방어 (D-2)", "callback_data": "menu_margin_clear"}],
+                                [{"text": "🎯 목표 달성 플래너", "callback_data": "menu_planner"}]
                             ]
                         }
                         await send_tg_message(msg, reply_markup=reply_markup)
@@ -304,6 +332,40 @@ async def main():
                             await send_tg_message(help_msg)
                             continue
                         
+                        elif cb_data == 'menu_planner':
+                            current_assets = await kiwoom_api.get_estimated_assets(session)
+                            if current_assets is None: current_assets = user_settings.get('base_amount', 0)
+                            
+                            target_date = user_settings.get('target_date', '2026-12-20')
+                            target_amt = user_settings.get('target_amount', 100000000)
+                            rem_days = get_remaining_trading_days(today_str, target_date)
+                            
+                            needed_amt = target_amt - current_assets
+                            
+                            msg = f"🎯 [목표 달성 플래너]\n\n"
+                            msg += f"• 목표일: {target_date} (남은 영업일: {rem_days}일)\n"
+                            msg += f"• 목표 금액: {target_amt:,}원\n"
+                            msg += f"• 현재 자산: {current_assets:,}원\n"
+                            
+                            if needed_amt <= 0:
+                                msg += "\n🎉 **목표 금액을 이미 달성했습니다!** 축하합니다!"
+                            elif rem_days <= 0:
+                                msg += "\n⚠️ 목표일이 지났거나 오늘입니다. 목표일을 연장해주세요."
+                            else:
+                                daily_req = needed_amt / rem_days
+                                daily_pct = (daily_req / current_assets) * 100 if current_assets > 0 else 0
+                                msg += f"• 남은 금액: {needed_amt:,}원\n\n"
+                                msg += f"🔥 **하루 목표 수익금**: {int(daily_req):,}원\n"
+                                msg += f"📈 **현 자산 대비 필요 수익률**: 하루 {daily_pct:.2f}%\n"
+                                
+                            reply_markup = {
+                                "inline_keyboard": [
+                                    [{"text": "🗓️ 목표일 변경", "callback_data": "set_target_date"}, {"text": "💰 목표금액 변경", "callback_data": "set_target_amount"}]
+                                ]
+                            }
+                            await send_tg_message(msg, reply_markup=reply_markup)
+                            continue
+
                         elif cb_data == 'sync_holdings':
                             holdings = await kiwoom_api.get_holdings_data(session)
                             if holdings is None:
@@ -499,6 +561,20 @@ async def main():
                             else: await send_tg_message("❌ 올바른 6자리 종목코드를 입력하세요.")
                             awaiting_setting = None
                             continue
+                        elif awaiting_setting == 'target_date':
+                            date_str = cmd.strip()
+                            try:
+                                datetime.strptime(date_str, '%Y-%m-%d')
+                                user_settings['target_date'] = date_str
+                                def _save_set():
+                                    with open(SETTINGS_FILE, 'w') as f: json.dump(user_settings, f, indent=4)
+                                await asyncio.to_thread(_save_set)
+                                await send_tg_message(f"✅ 목표일이 {date_str}로 변경되었습니다.")
+                            except ValueError:
+                                await send_tg_message("❌ 날짜 형식이 올바르지 않습니다. YYYY-MM-DD 형식으로 입력하세요.")
+                            finally:
+                                awaiting_setting = None
+                            continue
                         else:
                             try:
                                 val = float(cmd.replace(',', '').strip())
@@ -507,6 +583,7 @@ async def main():
                                 elif awaiting_setting == 'gemini_tp': user_settings['gemini_tp_pct'] = val
                                 elif awaiting_setting == 'gemini_sl': user_settings['gemini_sl_pct'] = val
                                 elif awaiting_setting == 'autorr': user_settings['auto_rr_ratio'] = val
+                                elif awaiting_setting == 'target_amount': user_settings['target_amount'] = int(val)
                                     
                                 await send_tg_message("✅ 설정 변경이 완료되었습니다.")
                                 def _save_set():
@@ -588,9 +665,12 @@ async def main():
                             await send_tg_message(f"✅ NXT 연장장 스캔 모드가 **{new_status}** 되었습니다.")
                             continue
                         
-                        if cb_data in ['set_base', 'set_risk', 'set_autorr', 'set_gemini_amount', 'set_gemini_tp', 'set_gemini_sl']:
+                        if cb_data in ['set_base', 'set_risk', 'set_autorr', 'set_gemini_amount', 'set_gemini_tp', 'set_gemini_sl', 'set_target_date', 'set_target_amount']:
                             awaiting_setting = cb_data.replace('set_', '')
-                            await send_tg_message(f"✏️ 새로운 값을 숫자로만 입력하세요.")
+                            if awaiting_setting == 'target_date':
+                                await send_tg_message("🗓️ 새로운 목표일을 YYYY-MM-DD 형식으로 입력하세요 (예: 2026-12-20):")
+                            else:
+                                await send_tg_message("✏️ 새로운 값을 숫자로만 입력하세요.")
                             continue
 
                     if cmd == '잔고':
