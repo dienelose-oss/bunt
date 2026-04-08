@@ -5,6 +5,7 @@ import json
 import asyncio
 import aiohttp
 import re
+import ast
 import pandas as pd
 import redis.asyncio as redis
 from datetime import datetime, time as dt_time, timezone, timedelta 
@@ -28,6 +29,9 @@ HOLIDAY_FILE = 'krx_holidays.json'
 
 chart_lock = threading.Lock()
 KST = timezone(timedelta(hours=9))
+
+# 코스피/코스닥 소속 시장 캐싱 딕셔너리
+_STOCK_MARKET_CACHE = {}
 
 def get_d_minus_2_date(current_date_str):
     dt = datetime.strptime(current_date_str, '%Y%m%d')
@@ -152,7 +156,8 @@ async def load_or_init_settings(session):
     await asyncio.to_thread(_save)
     return default_settings
 
-async def get_stock_name_from_naver(session, code):
+# 종목 이름 및 코스피/코스닥 소속 시장 판별 함수
+async def get_stock_info_from_naver(session, code):
     url = f"https://m.stock.naver.com/api/stock/{code}/basic"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36'
@@ -161,10 +166,13 @@ async def get_stock_name_from_naver(session, code):
         async with session.get(url, headers=headers, timeout=5) as resp:
             data = await resp.json()
             if data and 'stockName' in data:
-                return data['stockName'].strip()
+                name = data['stockName'].strip()
+                mkt_str = data.get('stockExchangeType', {}).get('name', '').upper()
+                market = 'KOSPI' if 'KOSPI' in mkt_str else 'KOSDAQ'
+                return name, market
     except Exception as e:
         print(f"네이버 모바일 API 종목명 역산 오류: {e}")
-    return None
+    return None, 'KOSDAQ'
 
 async def get_kosdaq_macro_trend(session):
     url = "https://m.stock.naver.com/api/index/KOSDAQ/basic"
@@ -175,6 +183,30 @@ async def get_kosdaq_macro_trend(session):
             return float(data.get('fluctuationsRatio', 0.0))
     except Exception:
         return 0.0
+
+# 🚨 코스피/코스닥 실시간 지수 1분봉 20개 수집 함수 (이동평균 연산용)
+async def get_macro_minute_candles(session, market):
+    now = datetime.now(KST)
+    start_time = (now - timedelta(days=1)).strftime('%Y%m%d') + "090000"
+    end_time = now.strftime('%Y%m%d%H%M%S')
+    url = f"https://api.finance.naver.com/siseJson.naver?symbol={market}&requestType=1&startTime={start_time}&endTime={end_time}&timeframe=minute"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        async with session.get(url, headers=headers, timeout=5) as resp:
+            text = await resp.text()
+            text = text.replace("'", '"').replace('\n', '').strip()
+            matches = re.findall(r'\["(\d{12})",\s*([\d\.]+),\s*([\d\.]+),\s*([\d\.]+),\s*([\d\.]+),\s*(\d+)\]', text)
+            candles = []
+            for m in matches[-20:]: 
+                candles.append({
+                    'time': m[0],
+                    'close': float(m[4])
+                })
+            candles.reverse() # KIS API 규격에 맞춰 최신 데이터를 인덱스 0으로 뒤집기
+            return candles
+    except Exception as e:
+        print(f"매크로 지수 수집 오류 [{market}]: {e}")
+        return []
 
 def load_today_asset_data():
     history = []
@@ -210,7 +242,7 @@ def _generate_and_send_asset_chart(asset_history, base_amount, max_assets_today,
         plt.title("당일 실시간 추정자산 흐름 (08:00 ~ 20:00)")
         plt.grid(True, linestyle='--', alpha=0.6)
         
-        # 🚨 바로 아랫줄이 KST 한국시간으로 강제 고정하도록 수정된 부분입니다.
+        # 🚨 한국 시간(KST)으로 그래프 하단 라벨 포맷 고정
         plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M', tz=KST))
         
         plt.xticks(rotation=45)
@@ -220,7 +252,7 @@ def _generate_and_send_asset_chart(asset_history, base_amount, max_assets_today,
         try:
             plt.savefig(chart_path)
         except Exception as e:
-            print(f"차트 저장 실패 (파일 열림 등 권한 문제): {e}")
+            print(f"차트 저장 실패 (권한 문제 등): {e}")
         finally:
             plt.close()
         
@@ -555,9 +587,10 @@ async def main():
                                     await send_tg_message("❌ 관심종목은 최대 10개까지만 등록 가능합니다.")
                                 else:
                                     await send_tg_message(f"🔍 [{code}] 네이버 금융 API 역산 중...")
-                                    name = await get_stock_name_from_naver(session, code)
+                                    name, mkt = await get_stock_info_from_naver(session, code)
                                     if name:
                                         watchlist[code] = name
+                                        _STOCK_MARKET_CACHE[code] = mkt
                                         def _save_set():
                                             with open(SETTINGS_FILE, 'w') as f: json.dump(user_settings, f, indent=4)
                                         await asyncio.to_thread(_save_set)
@@ -680,7 +713,6 @@ async def main():
                             continue
 
                     if cmd == '잔고':
-                        # REST API 호출 시 대기하더라도 이 태스크만 대기함 (블로킹 해결)
                         bal = await kiwoom_api.get_account_balance(session)
                         if bal: await send_tg_message(bal.replace('📊 ', '').replace('📋 ', ''))
                         continue
@@ -826,7 +858,7 @@ async def main():
                     if not (9 <= now.hour <= 10 and (now.hour == 9 or now.minute <= 30)):
                         allow_gem, allow_lap = False, False
 
-                # 시장 서킷 브레이커 방어
+                # 시장 서킷 브레이커 방어 (과거 등락률 로직 유지)
                 if current_macro_pct <= -1.5:
                     allow_gem, allow_lap = False, False
 
@@ -836,6 +868,30 @@ async def main():
                     
                     if is_3m or is_5m:
                         current_macro_pct = await get_kosdaq_macro_trend(session) 
+                        
+                        # 🚨 1. 지수 분봉 수집 및 5MA/20MA 연산 (정배열/역배열 판별)
+                        kpi_candles = await get_macro_minute_candles(session, 'KOSPI')
+                        kdq_candles = await get_macro_minute_candles(session, 'KOSDAQ')
+                        
+                        macro_state = {'KOSPI': {'trend': '정배열', 'gap': 0.0, '5ma': 0, '20ma': 0}, 
+                                       'KOSDAQ': {'trend': '정배열', 'gap': 0.0, '5ma': 0, '20ma': 0}}
+                                       
+                        def _calc_ma(candles):
+                            if len(candles) < 20: return 0, 0, '정배열', 0.0
+                            closes = [c['close'] for c in candles[:20]]
+                            ma5 = sum(closes[:5]) / 5
+                            ma20 = sum(closes[:20]) / 20
+                            trend = '정배열' if ma5 >= ma20 else '역배열'
+                            gap = ((ma5 - ma20) / ma20) * 100 if ma20 > 0 else 0.0
+                            return ma5, ma20, trend, gap
+                            
+                        kpi_5, kpi_20, kpi_trend, kpi_gap = _calc_ma(kpi_candles)
+                        kdq_5, kdq_20, kdq_trend, kdq_gap = _calc_ma(kdq_candles)
+                        
+                        macro_state['KOSPI'] = {'trend': kpi_trend, 'gap': round(kpi_gap, 2), '5ma': kpi_5, '20ma': kpi_20}
+                        macro_state['KOSDAQ'] = {'trend': kdq_trend, 'gap': round(kdq_gap, 2), '5ma': kdq_5, '20ma': kdq_20}
+                        
+                        # 타겟 후보 수집
                         search_20 = await kiwoom_api.get_top_20_search_rank(session)
                         volume_20 = await kiwoom_api.get_top_20_volume_rank(session)
                         
@@ -851,6 +907,16 @@ async def main():
                             if wc_code not in target_codes:
                                 target_codes.append(wc_code)
                                 stock_dict[wc_code] = wc_name
+                                
+                        # 🚨 2. 포착 종목의 소속 시장 실시간 판별 및 캐싱
+                        async def fetch_market_if_needed(c):
+                            if c not in _STOCK_MARKET_CACHE:
+                                name, mkt = await get_stock_info_from_naver(session, c)
+                                if name:
+                                    _STOCK_MARKET_CACHE[c] = mkt
+                                    stock_dict[c] = name
+                                    
+                        await asyncio.gather(*[fetch_market_if_needed(c) for c in target_codes])
 
                         if target_codes:
                             holdings_check = await kiwoom_api.get_holdings_data(session) or {}
@@ -864,6 +930,13 @@ async def main():
                             
                             for code in target_codes:
                                 if code in holdings_check: continue
+                                
+                                market = _STOCK_MARKET_CACHE.get(code, 'KOSDAQ')
+                                m_state = macro_state.get(market, {})
+                                
+                                # 🚨 3. 정배열 킬 스위치 (역배열 시 매수 전면 차단)
+                                if m_state.get('trend') == '역배열':
+                                    continue
                                 
                                 curr_price_check = None
                                 if is_3m and code in candles_3m_dict and candles_3m_dict[code]:
@@ -898,7 +971,9 @@ async def main():
                                                     buy_res, odno = await kiwoom_api.buy_limit_order(session, code, qty, entry)
                                                     if "✅" in buy_res:
                                                         gemini_data['meta']['macro_pct'] = current_macro_pct 
-                                                        auto_watch_list[code] = {'name': stock_dict[code], 'qty': qty, 'entry': entry, 'sl': gemini_data['sl_price'], 'tp': gemini_data['dynamic_tp'], 'status': 'pending', 'odno': odno, 'is_gemini': True, 'meta': gemini_data['meta'], 'entry_time': time.time()}
+                                                        gemini_data['meta']['macro_trend'] = m_state.get('trend', '정배열')
+                                                        gemini_data['meta']['macro_gap'] = m_state.get('gap', 0.0)
+                                                        auto_watch_list[code] = {'name': stock_dict[code], 'market': market, 'qty': qty, 'entry': entry, 'sl': gemini_data['sl_price'], 'tp': gemini_data['dynamic_tp'], 'status': 'pending', 'odno': odno, 'is_gemini': True, 'meta': gemini_data['meta'], 'entry_time': time.time()}
                                                         await save_watch_list(redis_client, auto_watch_list, use_redis)
                                                         if kiwoom_api.ws_client: await kiwoom_api.ws_client.subscribe(code)
                                                         msg = f"🤖 [제미나이 눌림목 대기매수] {stock_dict[code]} {qty}주\n"
@@ -928,7 +1003,9 @@ async def main():
                                                     buy_res, odno = await kiwoom_api.buy_limit_order(session, code, qty, entry)
                                                     if "✅" in buy_res:
                                                         lap_data['meta']['macro_pct'] = current_macro_pct 
-                                                        auto_watch_list[code] = {'name': stock_dict[code], 'qty': qty, 'entry': entry, 'sl': lap_data['sl_price'], 'tp': lap_data['dynamic_tp'], 'status': 'pending', 'odno': odno, 'is_laptop': True, 'meta': lap_data['meta'], 'entry_time': time.time()}
+                                                        lap_data['meta']['macro_trend'] = m_state.get('trend', '정배열')
+                                                        lap_data['meta']['macro_gap'] = m_state.get('gap', 0.0)
+                                                        auto_watch_list[code] = {'name': stock_dict[code], 'market': market, 'qty': qty, 'entry': entry, 'sl': lap_data['sl_price'], 'tp': lap_data['dynamic_tp'], 'status': 'pending', 'odno': odno, 'is_laptop': True, 'meta': lap_data['meta'], 'entry_time': time.time()}
                                                         await save_watch_list(redis_client, auto_watch_list, use_redis)
                                                         if kiwoom_api.ws_client: await kiwoom_api.ws_client.subscribe(code)
                                                         await send_tg_message(f"💻 [랩탑 스윙 대기매수] {stock_dict[code]} {qty}주 (매수가: {entry:,}원)")
@@ -993,13 +1070,14 @@ async def main():
                                     hold_sec = int(time.time() - cond.get('entry_time', time.time()))
                                     meta = cond.get('meta', {})
                                         
+                                    # 🚨 확장된 로깅 헤더 구조에 맞게 기록 데이터 갱신
                                     if cond.get('is_gemini'):
-                                        headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'UpperTailRatio', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, max_pnl, "50%분할익절"]
+                                        headers = ['Date', 'Code', 'Name', 'Market', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'MacroTrend', 'MacroGap(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
+                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('market', 'KOSDAQ'), cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), meta.get('macro_trend', '정배열'), meta.get('macro_gap', 0.0), hold_sec, max_pnl, "50%분할익절"]
                                         await asyncio.to_thread(write_trade_log, 'gemini_log.csv', headers, row)
                                     elif cond.get('is_laptop'):
-                                        headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'Dummy', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, max_pnl, "50%분할익절"]
+                                        headers = ['Date', 'Code', 'Name', 'Market', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'MacroTrend', 'MacroGap(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
+                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('market', 'KOSDAQ'), cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), meta.get('macro_trend', '정배열'), meta.get('macro_gap', 0.0), hold_sec, max_pnl, "50%분할익절"]
                                         await asyncio.to_thread(write_trade_log, 'laptop_log.csv', headers, row)
                                     
                                     cond['qty'] -= sell_qty
@@ -1040,12 +1118,12 @@ async def main():
                                     meta = cond.get('meta', {})
                                         
                                     if cond.get('is_gemini'):
-                                        headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'UpperTailRatio', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, max_pnl, reason]
+                                        headers = ['Date', 'Code', 'Name', 'Market', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'MacroTrend', 'MacroGap(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
+                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('market', 'KOSDAQ'), cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), meta.get('macro_trend', '정배열'), meta.get('macro_gap', 0.0), hold_sec, max_pnl, reason]
                                         await asyncio.to_thread(write_trade_log, 'gemini_log.csv', headers, row)
                                     elif cond.get('is_laptop'):
-                                        headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'Dummy', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, max_pnl, reason]
+                                        headers = ['Date', 'Code', 'Name', 'Market', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'MacroTrend', 'MacroGap(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
+                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('market', 'KOSDAQ'), cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), meta.get('macro_trend', '정배열'), meta.get('macro_gap', 0.0), hold_sec, max_pnl, reason]
                                         await asyncio.to_thread(write_trade_log, 'laptop_log.csv', headers, row)
                                             
                                     del auto_watch_list[code]

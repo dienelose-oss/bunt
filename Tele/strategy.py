@@ -129,8 +129,8 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
 
     if vol_burst_ratio < 2.0: return False, {}
     
-    # 🚨 [신규 추가] VolBurst 킬 스위치 (거래량 15배 이상 폭발 시 작전/설거지 의심으로 진입 전면 차단)
-    if vol_burst_ratio > 15.0: return False, {}
+    # 🚨 [수정 완료] VolBurst 킬 스위치 (거래량 12배 이상 폭발 시 작전/설거지 의심으로 진입 전면 차단)
+    if vol_burst_ratio > 12.0: return False, {}
 
     # 🚨 [팩트 반영] 상위 필터 조건 무조건 사전 계산
     vwap = calculate_vwap(candles, today_str)

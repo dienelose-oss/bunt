@@ -22,9 +22,21 @@ def send_message(msg, reply_markup=None, reply_to_message_id=None):
         try:
             res = requests.post(url, json=payload, timeout=10)
             data = res.json()
+            
             if data.get('ok'):
                 return data['result'].get('message_id')
-            break 
+            else:
+                # 🚨 텔레그램 서버가 전송을 거부했을 때의 방어 및 복구 로직
+                err_desc = data.get('description', '알 수 없는 에러')
+                print(f"⚠️ 텔레그램 텍스트 전송 거부: {err_desc}")
+                
+                # 마크다운 파싱 에러 감지 시, 일반 텍스트로 즉시 재시도
+                if 'parse entities' in err_desc.lower() and 'parse_mode' in payload:
+                    print("🔄 특수문자 마크다운 파싱 충돌 감지. 일반 텍스트 모드로 재전송합니다.")
+                    del payload['parse_mode']
+                    continue 
+                break 
+                
         except requests.exceptions.Timeout:
             print(f"⚠️ 텔레그램 텍스트 전송 지연 (재시도 {attempt+1}/3)")
             time.sleep(1) 
@@ -48,9 +60,15 @@ def edit_message_text(msg_id, msg, reply_markup=None):
     for _ in range(3):
         try:
             res = requests.post(url, json=payload, timeout=10)
-            if res.json().get('ok'):
+            data = res.json()
+            if data.get('ok'):
                 return True
-            break
+            else:
+                err_desc = data.get('description', '알 수 없는 에러')
+                if 'parse entities' in err_desc.lower() and 'parse_mode' in payload:
+                    del payload['parse_mode']
+                    continue
+                break
         except Exception:
             time.sleep(1)
     return False
