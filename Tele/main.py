@@ -273,6 +273,14 @@ def write_trade_log(filename, headers, row_data):
             writer.writerow(headers)
         writer.writerow(row_data)
 
+# 🚨 타임 세션 판별 유틸리티 추가
+def get_time_session(ts):
+    dt = datetime.fromtimestamp(ts, tz=KST)
+    hm = dt.hour * 100 + dt.minute
+    if hm < 930: return 'Open(09:00~09:30)'
+    elif hm < 1400: return 'Mid(09:30~14:00)'
+    else: return 'Close(14:00~)'
+
 async def main():
     redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
     auto_watch_list, alerted_obs, use_redis = await load_persistent_state(redis_client)
@@ -1042,15 +1050,18 @@ async def main():
                             if rt_price <= cond['entry']:
                                 cond['status'] = 'active'
                                 cond['max_reached'] = rt_price
+                                cond['min_reached'] = rt_price # 🚨 MAE 추적 시작점
                                 state_changed = True
                                 await send_tg_message(f"🟢 [{stock_name}] 눌림목 매수 체결 확인! 감시 활성화.")
                             continue 
                         
                         if cond['status'] == 'active':
-                            if 'max_reached' not in cond:
-                                cond['max_reached'] = rt_price
-                            if rt_price > cond['max_reached']:
-                                cond['max_reached'] = rt_price
+                            if 'max_reached' not in cond: cond['max_reached'] = rt_price
+                            if 'min_reached' not in cond: cond['min_reached'] = rt_price
+                            
+                            # 🚨 최고점과 최저점 동시 갱신
+                            if rt_price > cond['max_reached']: cond['max_reached'] = rt_price
+                            if rt_price < cond['min_reached']: cond['min_reached'] = rt_price
                                 
                             # 1. 본절 방어 (+1.0%)
                             if rt_price >= cond['entry'] * 1.01 and cond['sl'] < cond['entry']:
@@ -1067,17 +1078,21 @@ async def main():
                                     await send_tg_message(f"🚀 [{stock_name}] 1차 목표가({cond['tp']:,}원) 도달! 50% 분할 익절 청산(시장가).\n결과: {sell_res}")
                                     pnl_pct = round(((rt_price - cond['entry']) / cond['entry']) * 100, 2)
                                     max_pnl = round(((cond['max_reached'] - cond['entry']) / cond['entry']) * 100, 2)
+                                    min_pnl = round(((cond['min_reached'] - cond['entry']) / cond['entry']) * 100, 2) # 🚨 MAE 기록
+                                    slippage = round(((rt_price - cond['tp']) / cond['tp']) * 100, 2) if cond['tp'] > 0 else 0.0 # 🚨 체결 오차 기록
+                                    session_str = get_time_session(cond.get('entry_time', time.time())) # 🚨 타임 세션 기록
+                                    
                                     hold_sec = int(time.time() - cond.get('entry_time', time.time()))
                                     meta = cond.get('meta', {})
                                         
-                                    # 🚨 확장된 로깅 헤더 구조에 맞게 기록 데이터 갱신
+                                    # 🚨 확장된 18개 로깅 헤더 구조에 맞게 기록 데이터 갱신
                                     if cond.get('is_gemini'):
-                                        headers = ['Date', 'Code', 'Name', 'Market', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'MacroTrend', 'MacroGap(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('market', 'KOSDAQ'), cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), meta.get('macro_trend', '정배열'), meta.get('macro_gap', 0.0), hold_sec, max_pnl, "50%분할익절"]
+                                        headers = ['Date', 'Code', 'Name', 'Market', 'TimeSession', 'EntryPrice', 'ExitPrice', 'Slippage(%)', 'PnL(%)', 'MinPnL(%)', 'MaxPnL(%)', 'VolBurstRatio', 'EntryATR', 'EntryVWAPGap(%)', 'MacroTrend', 'MacroGap(%)', 'HoldTime(s)', 'ExitReason']
+                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('market', 'KOSDAQ'), session_str, cond['entry'], rt_price, slippage, pnl_pct, min_pnl, max_pnl, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), meta.get('vwap_gap', 0.0), meta.get('macro_trend', '정배열'), meta.get('macro_gap', 0.0), hold_sec, "50%분할익절"]
                                         await asyncio.to_thread(write_trade_log, 'gemini_log.csv', headers, row)
                                     elif cond.get('is_laptop'):
-                                        headers = ['Date', 'Code', 'Name', 'Market', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'MacroTrend', 'MacroGap(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('market', 'KOSDAQ'), cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), meta.get('macro_trend', '정배열'), meta.get('macro_gap', 0.0), hold_sec, max_pnl, "50%분할익절"]
+                                        headers = ['Date', 'Code', 'Name', 'Market', 'TimeSession', 'EntryPrice', 'ExitPrice', 'Slippage(%)', 'PnL(%)', 'MinPnL(%)', 'MaxPnL(%)', 'PullbackVolRatio', 'EntryATR', 'EntryVWAPGap(%)', 'MacroTrend', 'MacroGap(%)', 'HoldTime(s)', 'ExitReason']
+                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('market', 'KOSDAQ'), session_str, cond['entry'], rt_price, slippage, pnl_pct, min_pnl, max_pnl, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), meta.get('vwap_gap', 0.0), meta.get('macro_trend', '정배열'), meta.get('macro_gap', 0.0), hold_sec, "50%분할익절"]
                                         await asyncio.to_thread(write_trade_log, 'laptop_log.csv', headers, row)
                                     
                                     cond['qty'] -= sell_qty
@@ -1112,18 +1127,23 @@ async def main():
                                     reason = "트레일링스탑(익절)" if cond.get('half_sold') else ("본절방어" if cond['sl'] == cond['entry'] else "손절(SL)")
                                     icon = "💸" if reason == "트레일링스탑(익절)" else ("🛡️" if reason == "본절방어" else "🔴")
                                     await send_tg_message(f"{icon} [{stock_name}] 손절/익절선({cond['sl']:,}원) 이탈! 남은 수량 전량 청산(시장가).\n사유: {reason}\n결과: {sell_res}")
+                                    
                                     pnl_pct = round(((rt_price - cond['entry']) / cond['entry']) * 100, 2)
                                     max_pnl = round(((cond['max_reached'] - cond['entry']) / cond['entry']) * 100, 2)
+                                    min_pnl = round(((cond['min_reached'] - cond['entry']) / cond['entry']) * 100, 2) # 🚨 MAE 기록
+                                    slippage = round(((rt_price - cond['sl']) / cond['sl']) * 100, 2) if cond['sl'] > 0 else 0.0 # 🚨 체결 오차 기록
+                                    session_str = get_time_session(cond.get('entry_time', time.time())) # 🚨 타임 세션 기록
+                                    
                                     hold_sec = int(time.time() - cond.get('entry_time', time.time()))
                                     meta = cond.get('meta', {})
                                         
                                     if cond.get('is_gemini'):
-                                        headers = ['Date', 'Code', 'Name', 'Market', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'MacroTrend', 'MacroGap(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('market', 'KOSDAQ'), cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), meta.get('macro_trend', '정배열'), meta.get('macro_gap', 0.0), hold_sec, max_pnl, reason]
+                                        headers = ['Date', 'Code', 'Name', 'Market', 'TimeSession', 'EntryPrice', 'ExitPrice', 'Slippage(%)', 'PnL(%)', 'MinPnL(%)', 'MaxPnL(%)', 'VolBurstRatio', 'EntryATR', 'EntryVWAPGap(%)', 'MacroTrend', 'MacroGap(%)', 'HoldTime(s)', 'ExitReason']
+                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('market', 'KOSDAQ'), session_str, cond['entry'], rt_price, slippage, pnl_pct, min_pnl, max_pnl, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), meta.get('vwap_gap', 0.0), meta.get('macro_trend', '정배열'), meta.get('macro_gap', 0.0), hold_sec, reason]
                                         await asyncio.to_thread(write_trade_log, 'gemini_log.csv', headers, row)
                                     elif cond.get('is_laptop'):
-                                        headers = ['Date', 'Code', 'Name', 'Market', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'MacroTrend', 'MacroGap(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('market', 'KOSDAQ'), cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), meta.get('macro_trend', '정배열'), meta.get('macro_gap', 0.0), hold_sec, max_pnl, reason]
+                                        headers = ['Date', 'Code', 'Name', 'Market', 'TimeSession', 'EntryPrice', 'ExitPrice', 'Slippage(%)', 'PnL(%)', 'MinPnL(%)', 'MaxPnL(%)', 'PullbackVolRatio', 'EntryATR', 'EntryVWAPGap(%)', 'MacroTrend', 'MacroGap(%)', 'HoldTime(s)', 'ExitReason']
+                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond.get('market', 'KOSDAQ'), session_str, cond['entry'], rt_price, slippage, pnl_pct, min_pnl, max_pnl, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), meta.get('vwap_gap', 0.0), meta.get('macro_trend', '정배열'), meta.get('macro_gap', 0.0), hold_sec, reason]
                                         await asyncio.to_thread(write_trade_log, 'laptop_log.csv', headers, row)
                                             
                                     del auto_watch_list[code]

@@ -154,6 +154,9 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
     entry_price = n1['close']
     atr = calculate_atr(candles, 14)
     
+    # 🚨 VWAP 이격도 계산 (로깅용)
+    vwap_gap = ((entry_price - vwap) / vwap * 100) if vwap > 0 else 0.0
+    
     # ATR 변동성 여유폭 로직 삭제 - 무조건 설정값(math_sl) 기준 칼손절
     math_sl = entry_price * (1 - (sl_pct / 100.0))
     sl_price = floor_to_tick(math_sl)
@@ -169,6 +172,7 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
         'meta': {
             'vol_burst_ratio': round(vol_burst_ratio, 2),
             'entry_atr': round(atr, 2),
+            'vwap_gap': round(vwap_gap, 2),
             'upper_tail_ratio': 0,
             'strategy': 'GEMINI',
             'diag_msg': diag_msg
@@ -210,6 +214,9 @@ def check_laptop_swing_model(candles, today_str, risk_amount, rr_ratio=2.0):
     entry_price = n1['close']
     atr = calculate_atr(candles, 14)
     
+    # 🚨 VWAP 이격도 계산 (로깅용)
+    vwap_gap = ((entry_price - vwap) / vwap * 100) if vwap > 0 else 0.0
+    
     sl_price = floor_to_tick(entry_price - (atr * 2.0))
     if sl_price >= entry_price: return False, {}
     
@@ -229,6 +236,7 @@ def check_laptop_swing_model(candles, today_str, risk_amount, rr_ratio=2.0):
         'meta': {
             'pullback_vol_ratio': round(n2['volume'] / max(recent_10_vols), 2),
             'entry_atr': round(atr, 2),
+            'vwap_gap': round(vwap_gap, 2),
             'strategy': 'LAPTOP'
         }
     }
