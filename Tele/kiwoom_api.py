@@ -209,7 +209,10 @@ async def buy_limit_order(session, stock_code, qty, price):
     }
     res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10000', params)
     
-    if res and str(res.get('return_code', res.get('rt_cd', '1'))) == '0':
+    if not res:
+        return f"❌ 매수 실패: API 통신 오류 (응답 없음)", None
+        
+    if str(res.get('return_code', res.get('rt_cd', '1'))) == '0':
         output = res.get('output', {})
         odno = output.get('ODNO', output.get('odno', res.get('ODNO', res.get('odno', ''))))
         
@@ -239,7 +242,10 @@ async def cancel_order(session, stock_code, orgn_odno):
     }
     res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10002', params)
     
-    if res and str(res.get('return_code', res.get('rt_cd', '1'))) == '0':
+    if not res:
+        return f"❌ 취소 실패: API 통신 오류 (응답 없음)"
+        
+    if str(res.get('return_code', res.get('rt_cd', '1'))) == '0':
         return f"✅ [{stock_code}] 미체결 취소 완료"
     return f"❌ 취소 실패: {res.get('return_msg', res.get('msg1', '오류'))}"
 
@@ -255,7 +261,10 @@ async def sell_market_order(session, stock_code, qty):
     }
     res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10001', params)
     
-    if res and str(res.get('return_code')) == '0':
+    if not res:
+        return f"❌ 매도 실패: API 통신 오류 (응답 없음)"
+        
+    if str(res.get('return_code')) == '0':
         return f"✅ [{stock_code}] {qty}주 시장가 매도 완료"
         
     return f"❌ 매도 실패: 에러코드 {res.get('return_code', '오류')} / 사유: {res.get('return_msg', '응답없음')}"
@@ -272,7 +281,10 @@ async def sell_limit_order(session, stock_code, qty, price):
     }
     res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10001', params)
     
-    if res and str(res.get('return_code')) == '0':
+    if not res:
+        return f"❌ 2차 매도 실패: API 통신 오류 (응답 없음)"
+        
+    if str(res.get('return_code')) == '0':
         return f"✅ [{stock_code}] {qty}주 지정가({int(price):,}원) 매도 접수 완료"
         
     return f"❌ 2차 매도 실패: 에러코드 {res.get('return_code', '오류')} / 사유: {res.get('return_msg', '응답없음')}"

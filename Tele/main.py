@@ -52,9 +52,7 @@ def get_remaining_trading_days(start_date_str, target_date_str):
         curr_dt = start_dt
         while curr_dt < target_dt:
             curr_dt += timedelta(days=1)
-            # 주말(토=5, 일=6) 제외
             if curr_dt.weekday() < 5: 
-                # 외부 파일에 등록된 공휴일/휴장일 제외
                 if curr_dt.strftime('%Y-%m-%d') not in holidays:
                     days += 1
         return days
@@ -211,12 +209,20 @@ def _generate_and_send_asset_chart(asset_history, base_amount, max_assets_today,
         plt.rcParams['axes.unicode_minus'] = False
         plt.title("당일 실시간 추정자산 흐름 (08:00 ~ 20:00)")
         plt.grid(True, linestyle='--', alpha=0.6)
-        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+        
+        # 🚨 바로 아랫줄이 KST 한국시간으로 강제 고정하도록 수정된 부분입니다.
+        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M', tz=KST))
+        
         plt.xticks(rotation=45)
         plt.tight_layout()
         chart_path = 'asset_chart.png'
-        plt.savefig(chart_path)
-        plt.close()
+        
+        try:
+            plt.savefig(chart_path)
+        except Exception as e:
+            print(f"차트 저장 실패 (파일 열림 등 권한 문제): {e}")
+        finally:
+            plt.close()
         
     diff = assets[-1] - base_amount
     diff_str = f"+{diff:,}" if diff > 0 else f"{diff:,}"
@@ -958,64 +964,98 @@ async def main():
                         if cond['status'] == 'pending':
                             if rt_price <= cond['entry']:
                                 cond['status'] = 'active'
+                                cond['max_reached'] = rt_price
                                 state_changed = True
                                 await send_tg_message(f"🟢 [{stock_name}] 눌림목 매수 체결 확인! 감시 활성화.")
                             continue 
                         
-                        if cond['tp'] > 0 and rt_price >= cond['tp']:
-                            sell_qty = cond.get('qty', 1) 
-                            sell_res = await kiwoom_api.sell_market_order(session, code, sell_qty)
-                            
-                            if "✅" in sell_res:
-                                await send_tg_message(f"🚀 [{stock_name}] 목표가({cond['tp']:,}원) 도달! 전량 익절 청산(시장가).\n결과: {sell_res}")
-                                pnl_pct = round(((rt_price - cond['entry']) / cond['entry']) * 100, 2)
-                                hold_sec = int(time.time() - cond.get('entry_time', time.time()))
-                                meta = cond.get('meta', {})
-                                    
-                                if cond.get('is_gemini'):
-                                    headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'UpperTailRatio', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                    row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, pnl_pct, "전량익절(목표가)"]
-                                    await asyncio.to_thread(write_trade_log, 'gemini_log.csv', headers, row)
-                                elif cond.get('is_laptop'):
-                                    headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'Dummy', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                    row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, pnl_pct, "전량익절(목표가)"]
-                                    await asyncio.to_thread(write_trade_log, 'laptop_log.csv', headers, row)
-                                    
-                                del auto_watch_list[code]
-                                if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
+                        if cond['status'] == 'active':
+                            if 'max_reached' not in cond:
+                                cond['max_reached'] = rt_price
+                            if rt_price > cond['max_reached']:
+                                cond['max_reached'] = rt_price
+                                
+                            # 1. 본절 방어 (+1.0%)
+                            if rt_price >= cond['entry'] * 1.01 and cond['sl'] < cond['entry']:
+                                cond['sl'] = cond['entry']
                                 state_changed = True
-                            else:
-                                await send_tg_message(f"⚠️ [{stock_name}] 익절 실패! 수동 확인 요망.\n결과: {sell_res}")
-                                cond['tp'] = 0 
-                                state_changed = True
+                                await send_tg_message(f"🛡️ [{stock_name}] +1.0% 수익 도달! 손절가를 매수가({cond['entry']:,}원)로 상향 조정하여 원금을 방어합니다.")
 
-                        elif cond['sl'] > 0 and rt_price <= cond['sl']:
-                            sell_qty = cond.get('qty', 1)
-                            sell_res = await kiwoom_api.sell_market_order(session, code, sell_qty)
-                            
-                            if "✅" in sell_res:
-                                await send_tg_message(f"🔴 [{stock_name}] 손절가({cond['sl']:,}원) 이탈! 전량 손절 청산(시장가).\n결과: {sell_res}")
-                                pnl_pct = round(((rt_price - cond['entry']) / cond['entry']) * 100, 2)
-                                hold_sec = int(time.time() - cond.get('entry_time', time.time()))
-                                meta = cond.get('meta', {})
-                                    
-                                if cond.get('is_gemini'):
-                                    headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'UpperTailRatio', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                    row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, 0, "손절(SL)"]
-                                    await asyncio.to_thread(write_trade_log, 'gemini_log.csv', headers, row)
-                                elif cond.get('is_laptop'):
-                                    headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'Dummy', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
-                                    row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, 0, "손절(SL)"]
-                                    await asyncio.to_thread(write_trade_log, 'laptop_log.csv', headers, row)
+                            # 2. 50% 분할 익절 (+1.5% 목표가 도달 시)
+                            if cond['tp'] > 0 and rt_price >= cond['tp']:
+                                sell_qty = max(1, cond.get('qty', 1) // 2)
+                                sell_res = await kiwoom_api.sell_market_order(session, code, sell_qty)
+                                
+                                if "✅" in sell_res:
+                                    await send_tg_message(f"🚀 [{stock_name}] 1차 목표가({cond['tp']:,}원) 도달! 50% 분할 익절 청산(시장가).\n결과: {sell_res}")
+                                    pnl_pct = round(((rt_price - cond['entry']) / cond['entry']) * 100, 2)
+                                    max_pnl = round(((cond['max_reached'] - cond['entry']) / cond['entry']) * 100, 2)
+                                    hold_sec = int(time.time() - cond.get('entry_time', time.time()))
+                                    meta = cond.get('meta', {})
                                         
-                                del auto_watch_list[code]
-                                if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
-                                state_changed = True
-                            else:
-                                await send_tg_message(f"❌ [{stock_name}] 최종 손절 매도 실패.\n사유: {sell_res}")
-                                del auto_watch_list[code]
-                                if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
-                                state_changed = True
+                                    if cond.get('is_gemini'):
+                                        headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'UpperTailRatio', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
+                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, max_pnl, "50%분할익절"]
+                                        await asyncio.to_thread(write_trade_log, 'gemini_log.csv', headers, row)
+                                    elif cond.get('is_laptop'):
+                                        headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'Dummy', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
+                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, max_pnl, "50%분할익절"]
+                                        await asyncio.to_thread(write_trade_log, 'laptop_log.csv', headers, row)
+                                    
+                                    cond['qty'] -= sell_qty
+                                    if cond['qty'] <= 0:
+                                        del auto_watch_list[code]
+                                        if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
+                                    else:
+                                        cond['tp'] = 0
+                                        cond['half_sold'] = True
+                                    state_changed = True
+                                else:
+                                    await send_tg_message(f"⚠️ [{stock_name}] 50% 익절 실패! 수동 확인 요망.\n결과: {sell_res}")
+                                    cond['tp'] = 0 
+                                    state_changed = True
+
+                            # 3. 트레일링 스탑 (절반 익절 후)
+                            if cond.get('half_sold'):
+                                new_sl_raw = int(cond['max_reached'] * 0.98)
+                                tick = strategy.get_tick_size(new_sl_raw) if hasattr(strategy, 'get_tick_size') else 1
+                                new_sl = (new_sl_raw // tick) * tick if tick > 1 else new_sl_raw
+                                    
+                                if new_sl > cond['sl']:
+                                    cond['sl'] = new_sl
+                                    state_changed = True
+
+                            # 4. 손절가(또는 트레일링 스탑, 본절가) 이탈 시 전량 청산
+                            if code in auto_watch_list and cond['sl'] > 0 and rt_price <= cond['sl']:
+                                sell_qty = cond.get('qty', 1)
+                                sell_res = await kiwoom_api.sell_market_order(session, code, sell_qty)
+                                
+                                if "✅" in sell_res:
+                                    reason = "트레일링스탑(익절)" if cond.get('half_sold') else ("본절방어" if cond['sl'] == cond['entry'] else "손절(SL)")
+                                    icon = "💸" if reason == "트레일링스탑(익절)" else ("🛡️" if reason == "본절방어" else "🔴")
+                                    await send_tg_message(f"{icon} [{stock_name}] 손절/익절선({cond['sl']:,}원) 이탈! 남은 수량 전량 청산(시장가).\n사유: {reason}\n결과: {sell_res}")
+                                    pnl_pct = round(((rt_price - cond['entry']) / cond['entry']) * 100, 2)
+                                    max_pnl = round(((cond['max_reached'] - cond['entry']) / cond['entry']) * 100, 2)
+                                    hold_sec = int(time.time() - cond.get('entry_time', time.time()))
+                                    meta = cond.get('meta', {})
+                                        
+                                    if cond.get('is_gemini'):
+                                        headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'VolBurstRatio', 'EntryATR', 'UpperTailRatio', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
+                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('vol_burst_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, max_pnl, reason]
+                                        await asyncio.to_thread(write_trade_log, 'gemini_log.csv', headers, row)
+                                    elif cond.get('is_laptop'):
+                                        headers = ['Date', 'Code', 'Name', 'EntryPrice', 'ExitPrice', 'PnL(%)', 'PullbackVolRatio', 'EntryATR', 'Dummy', 'Macro(%)', 'HoldTime(s)', 'MaxPnL(%)', 'ExitReason']
+                                        row = [datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'), code, cond['name'], cond['entry'], rt_price, pnl_pct, meta.get('pullback_vol_ratio', 0), meta.get('entry_atr', 0), 0, meta.get('macro_pct', 0.0), hold_sec, max_pnl, reason]
+                                        await asyncio.to_thread(write_trade_log, 'laptop_log.csv', headers, row)
+                                            
+                                    del auto_watch_list[code]
+                                    if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
+                                    state_changed = True
+                                else:
+                                    await send_tg_message(f"❌ [{stock_name}] 최종 전량 청산 매도 실패.\n사유: {sell_res}")
+                                    del auto_watch_list[code]
+                                    if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
+                                    state_changed = True
                         
                     if state_changed: await save_watch_list(redis_client, auto_watch_list, use_redis)
                     last_monitor_time = time.time()

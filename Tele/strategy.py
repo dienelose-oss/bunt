@@ -125,7 +125,12 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
         
     recent_vols = [c['volume'] for c in candles[2:16]]
     avg_vol = sum(recent_vols) / len(recent_vols) if recent_vols else 1
-    if n1['volume'] < (avg_vol * 2.0): return False, {}
+    vol_burst_ratio = n1['volume'] / avg_vol
+
+    if vol_burst_ratio < 2.0: return False, {}
+    
+    # 🚨 [신규 추가] VolBurst 킬 스위치 (거래량 15배 이상 폭발 시 작전/설거지 의심으로 진입 전면 차단)
+    if vol_burst_ratio > 15.0: return False, {}
 
     # 🚨 [팩트 반영] 상위 필터 조건 무조건 사전 계산
     vwap = calculate_vwap(candles, today_str)
@@ -148,10 +153,11 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
 
     entry_price = n1['close']
     atr = calculate_atr(candles, 14)
-    math_sl = entry_price * (1 - (sl_pct / 100.0))
-    atr_sl = entry_price - (atr * 1.5) 
     
-    sl_price = floor_to_tick(min(math_sl, atr_sl) if atr > 0 else math_sl)
+    # ATR 변동성 여유폭 로직 삭제 - 무조건 설정값(math_sl) 기준 칼손절
+    math_sl = entry_price * (1 - (sl_pct / 100.0))
+    sl_price = floor_to_tick(math_sl)
+    
     tp_price = ceil_to_tick(entry_price * (1 + (tp_pct / 100.0)))
     
     return True, {
@@ -161,7 +167,7 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
         'dynamic_tp': tp_price,
         'strategy': 'GEMINI',
         'meta': {
-            'vol_burst_ratio': round(n1['volume'] / avg_vol, 2),
+            'vol_burst_ratio': round(vol_burst_ratio, 2),
             'entry_atr': round(atr, 2),
             'upper_tail_ratio': 0,
             'strategy': 'GEMINI',
