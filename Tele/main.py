@@ -518,26 +518,39 @@ async def main():
                                 
                             target_holdings = snap_data.get(d_minus_2, {})
                             
+                            current_holdings = await kiwoom_api.get_holdings_data(session) or {}
+                            
                             msg = f"🚨 [미수/반대매매 방어 진단]\n"
                             msg += f"• 당일 예수금: {deposit_str}\n\n"
-                            msg += f"📊 [D-2 ({d_minus_2}) 15:20 기준 평가금액 리스트]\n"
                             
                             if not target_holdings:
                                 msg += "❌ 해당 일자(D-2) 15시 20분의 잔고 스냅샷 기록이 존재하지 않습니다."
                             else:
-                                sortable_list = []
+                                remaining_list = []
                                 for h_code, h_data in target_holdings.items():
-                                    qty = h_data.get('qty', 0)
-                                    eval_amt = h_data.get('eval_amt', h_data.get('purchase_price', 0) * qty)
-                                    sortable_list.append({'name': h_data.get('name', h_code), 'qty': qty, 'eval_amt': eval_amt})
-                                    
-                                sortable_list.sort(key=lambda x: x['eval_amt'], reverse=True)
+                                    d2_qty = h_data.get('qty', 0)
+                                    if h_code in current_holdings and current_holdings[h_code].get('qty', 0) > 0:
+                                        curr_qty = current_holdings[h_code]['qty']
+                                        rem_qty = min(d2_qty, curr_qty)
+                                        eval_amt = current_holdings[h_code].get('purchase_price', h_data.get('purchase_price', 0)) * rem_qty
+                                        remaining_list.append({
+                                            'name': h_data.get('name', h_code), 
+                                            'd2_qty': d2_qty,
+                                            'rem_qty': rem_qty, 
+                                            'eval_amt': eval_amt
+                                        })
                                 
-                                for i, item in enumerate(sortable_list, 1):
-                                    msg += f"{i}. {item['name']}: {int(item['eval_amt']):,}원 ({item['qty']}주)\n"
+                                if not remaining_list:
+                                    msg += "✅ D-2일에 매수/보유했던 종목을 현재 모두 매도하였습니다.\n(미수 반대매매 위험 종목 없음)"
+                                else:
+                                    msg += f"⚠️ [D-2일 스냅샷 기준 현재 잔존 종목]\n"
+                                    remaining_list.sort(key=lambda x: x['eval_amt'], reverse=True)
                                     
-                                msg += "\n💡 위 종목 매도 후 '매도대금 담보대출'로 미수를 방어하십시오."
-                                
+                                    for i, item in enumerate(remaining_list, 1):
+                                        msg += f"{i}. {item['name']}: {item['rem_qty']}주 (D-2 당시 {item['d2_qty']}주)\n"
+                                        
+                                    msg += "\n💡 위 종목이 미수금 발생의 원인일 수 있습니다. '매도대금 담보대출'이나 '현금 매도'로 미수를 방어하십시오."
+                                    
                             await send_tg_message(msg)
                             continue
 
@@ -700,6 +713,7 @@ async def main():
                                 [{"text": btn_gem, "callback_data": "toggle_gem"}, {"text": btn_lap, "callback_data": "toggle_lap"}],
                                 [{"text": btn_time, "callback_data": "toggle_time"}, {"text": btn_sync, "callback_data": "toggle_sync"}],
                                 [{"text": btn_gem_lvl, "callback_data": "cycle_gem_lvl"}, {"text": "자동 진입금액", "callback_data": "set_gemini_amount"}],
+                                [{"text": "자동 익절(TP) %", "callback_data": "set_gemini_tp"}, {"text": "자동 손절(SL) %", "callback_data": "set_gemini_sl"}],
                                 [{"text": "수동 손실비용", "callback_data": "set_risk"}, {"text": "스윙 손익비", "callback_data": "set_autorr"}],
                                 [{"text": "NXT 스캔 전환", "callback_data": "toggle_nxt"}, {"text": "기준 자산 갱신", "callback_data": "set_base"}],
                                 [{"text": btn_yield, "callback_data": "set_buy_yield"}]
