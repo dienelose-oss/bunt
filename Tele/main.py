@@ -6,6 +6,7 @@ import asyncio
 import aiohttp
 import re
 import ast
+import shutil
 import pandas as pd
 import redis.asyncio as redis
 from datetime import datetime, time as dt_time, timezone, timedelta 
@@ -840,6 +841,21 @@ async def main():
 
                 # 매일 아침 초기화
                 if now.hour == 7 and now.minute == 55 and last_daily_reset_date != today_str:
+                    # 🚨 [복구] 전일자 자산 차트 이미지 보관 (아카이빙)
+                    if len(asset_history) >= 2:
+                        prev_date_str = asset_history[-1][0].strftime('%Y%m%d')
+                        archive_path = f"asset_chart_{prev_date_str}.png"
+                        if os.path.exists('asset_chart.png'):
+                            await asyncio.to_thread(shutil.copy, 'asset_chart.png', archive_path)
+                            
+                    # 🚨 [추가] 당일 시작 기준 자산(base_amount) 자동 갱신 (전일 종가/평가 기준)
+                    current_assets = await kiwoom_api.get_estimated_assets(session)
+                    if current_assets is not None:
+                        user_settings['base_amount'] = current_assets
+                        def _save_set():
+                            with open(SETTINGS_FILE, 'w') as f: json.dump(user_settings, f, indent=4)
+                        await asyncio.to_thread(_save_set)
+
                     asset_history.clear()    
                     max_assets_today = 0
                     max_assets_time = ""
@@ -849,7 +865,10 @@ async def main():
                     await save_alerted_obs(alerted_obs)
                     last_daily_reset_date = today_str
                     last_engine_scan_time = "스캔 대기 중"
-                    await send_tg_message("🌅 [07:55] 시스템 메모리 초기화. 금일 데이터를 준비합니다.")
+                    
+                    msg = f"🌅 [07:55] 시스템 초기화 및 전일자 차트 보관 완료.\n"
+                    msg += f"💰 금일 시작 기준 자산: {user_settings.get('base_amount', 0):,}원"
+                    await send_tg_message(msg)
                 
                 # 매 정각 화면 지우기
                 if now.minute == 0 and last_cleared_hour != now.hour:

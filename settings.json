@@ -6,6 +6,8 @@
     "gemini_tp_pct": 3.0,
     "gemini_sl_pct": 2.0,
     "gemini_filter_lvl": 1,
+    "gemini_pullback_pct": 1.0,
+    "cancel_timeout_mins": 30,
     "buy_yield_ticks": 3,
     "nxt_scan_enabled": true,
     "custom_watchlist": {
