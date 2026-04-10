@@ -132,6 +132,8 @@ async def load_or_init_settings(session):
         'gemini_tp_pct': 1.5,
         'gemini_sl_pct': 1.0,
         'gemini_filter_lvl': 3,
+        'gemini_pullback_pct': 1.0,
+        'cancel_timeout_mins': 30,
         'buy_yield_ticks': 3,
         'nxt_scan_enabled': False,
         'custom_watchlist': {},
@@ -674,6 +676,8 @@ async def main():
                                 elif awaiting_setting == 'gemini_amount': user_settings['gemini_amount'] = int(val)
                                 elif awaiting_setting == 'gemini_tp': user_settings['gemini_tp_pct'] = val
                                 elif awaiting_setting == 'gemini_sl': user_settings['gemini_sl_pct'] = val
+                                elif awaiting_setting == 'gemini_pullback': user_settings['gemini_pullback_pct'] = val
+                                elif awaiting_setting == 'cancel_timeout': user_settings['cancel_timeout_mins'] = int(val)
                                 elif awaiting_setting == 'autorr': user_settings['auto_rr_ratio'] = val
                                 elif awaiting_setting == 'target_amount': user_settings['target_amount'] = int(val)
                                     
@@ -703,7 +707,9 @@ async def main():
                         msg += f"• 현재 필터 강도: Lv.{user_settings.get('gemini_filter_lvl', 3)}\n"
                         msg += f"• 고정 진입 금액: {user_settings.get('gemini_amount', 500000):,}원\n"
                         msg += f"• 자동 익절(TP): +{user_settings.get('gemini_tp_pct', 1.5)}%\n"
-                        msg += f"• 자동 손절(SL): -{user_settings.get('gemini_sl_pct', 1.0)}%\n\n"
+                        msg += f"• 자동 손절(SL): -{user_settings.get('gemini_sl_pct', 1.0)}%\n"
+                        msg += f"• 진입 눌림 대기: -{user_settings.get('gemini_pullback_pct', 1.0)}%\n"
+                        msg += f"• 미체결 취소: {user_settings.get('cancel_timeout_mins', 30)}분 경과 시\n\n"
                         
                         msg += f"🌌 NXT 스캔 모드: {nxt_status}\n\n"
                         msg += f"🎛️ 엔진 스위치 (클릭하여 변경)\n"
@@ -714,6 +720,7 @@ async def main():
                                 [{"text": btn_time, "callback_data": "toggle_time"}, {"text": btn_sync, "callback_data": "toggle_sync"}],
                                 [{"text": btn_gem_lvl, "callback_data": "cycle_gem_lvl"}, {"text": "자동 진입금액", "callback_data": "set_gemini_amount"}],
                                 [{"text": "자동 익절(TP) %", "callback_data": "set_gemini_tp"}, {"text": "자동 손절(SL) %", "callback_data": "set_gemini_sl"}],
+                                [{"text": "📉 제미나이 눌림(%)", "callback_data": "set_gemini_pullback"}, {"text": "⏳ 미체결 취소(분)", "callback_data": "set_cancel_timeout"}],
                                 [{"text": "수동 손실비용", "callback_data": "set_risk"}, {"text": "스윙 손익비", "callback_data": "set_autorr"}],
                                 [{"text": "NXT 스캔 전환", "callback_data": "toggle_nxt"}, {"text": "기준 자산 갱신", "callback_data": "set_base"}],
                                 [{"text": btn_yield, "callback_data": "set_buy_yield"}]
@@ -725,6 +732,16 @@ async def main():
                     if cmd.startswith('cb:'):
                         cb_data = cmd.replace('cb:', '')
                         
+                        if cb_data == 'set_gemini_pullback':
+                            awaiting_setting = 'gemini_pullback'
+                            await send_tg_message("✏️ 제미나이 매수 대기 눌림폭(%)을 숫자로 입력하세요 (예: 1.0):")
+                            continue
+                            
+                        if cb_data == 'set_cancel_timeout':
+                            awaiting_setting = 'cancel_timeout'
+                            await send_tg_message("✏️ 미체결 대기주문 자동 취소 시간(분)을 숫자로 입력하세요 (예: 30):")
+                            continue
+                            
                         if cb_data == 'set_buy_yield':
                             awaiting_setting = 'buy_yield_ticks'
                             await send_tg_message("✏️ 매수 시 양보할 호가 틱(Tick) 수를 숫자로 입력하세요 (예: 3):")
@@ -1028,9 +1045,10 @@ async def main():
                                                 alerted_obs.add(alert_key)
                                                 await save_alerted_obs(alerted_obs)
                                                 entry = gemini_data['entry_price']
-                                                yield_ticks = user_settings.get('buy_yield_ticks', 3)
-                                                tick_size = strategy.get_tick_size(entry) if hasattr(strategy, 'get_tick_size') else _get_tick_size(entry)
-                                                order_price = entry + (tick_size * yield_ticks)
+                                                pullback_pct = user_settings.get('gemini_pullback_pct', 1.0)
+                                                target_price_raw = int(entry * (1 - pullback_pct / 100.0))
+                                                tick_size = strategy.get_tick_size(target_price_raw) if hasattr(strategy, 'get_tick_size') else _get_tick_size(target_price_raw)
+                                                order_price = (target_price_raw // tick_size) * tick_size # 호가 단위 내림
                                                 
                                                 qty = user_settings.get('gemini_amount', 500000) // order_price
                                                 if qty > 0:
@@ -1043,7 +1061,7 @@ async def main():
                                                         await save_watch_list(redis_client, auto_watch_list, use_redis)
                                                         if kiwoom_api.ws_client: await kiwoom_api.ws_client.subscribe(code)
                                                         msg = f"🤖 [제미나이 눌림목 대기매수] {stock_dict[code]} {qty}주\n"
-                                                        msg += f"• 대기 매수가: {order_price:,}원 (지정가, +{yield_ticks}호가 양보)\n"
+                                                        msg += f"• 포착가: {entry:,}원 ➡️ 대기 매수가: {order_price:,}원 (-{pullback_pct}%)\n"
                                                         msg += f"• 체결 시 목표가: {gemini_data['dynamic_tp']:,}원 (+{user_settings.get('gemini_tp_pct', 1.5)}%)\n"
                                                         msg += f"• 체결 시 손절가: {gemini_data['sl_price']:,}원 (-{user_settings.get('gemini_sl_pct', 1.0)}%)\n"
                                                         msg += f"• 진단: {gemini_data['meta'].get('diag_msg', '확인불가')}"
@@ -1110,6 +1128,17 @@ async def main():
                         stock_name = cond.get('name', code)
                         
                         if cond['status'] == 'pending':
+                            # 🚨 타임아웃 미체결 자동 취소 로직
+                            timeout_mins = user_settings.get('cancel_timeout_mins', 30)
+                            if (current_timestamp - cond.get('entry_time', current_timestamp)) > timeout_mins * 60:
+                                if cond.get('odno'):
+                                    await kiwoom_api.cancel_order(session, code, cond['odno'])
+                                del auto_watch_list[code]
+                                if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
+                                state_changed = True
+                                await send_tg_message(f"⏳ [{stock_name}] 미체결 대기시간({timeout_mins}분) 초과로 매수 주문 자동 취소 완료.")
+                                continue
+
                             if rt_price <= cond['entry']:
                                 cond['status'] = 'active'
                                 cond['max_reached'] = rt_price
