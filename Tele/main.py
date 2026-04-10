@@ -30,6 +30,16 @@ HOLIDAY_FILE = 'krx_holidays.json'
 chart_lock = threading.Lock()
 KST = timezone(timedelta(hours=9))
 
+# 호가 단위(Tick Size) 계산 유틸리티
+def _get_tick_size(price):
+    if price < 2000: return 1
+    elif price < 5000: return 5
+    elif price < 20000: return 10
+    elif price < 50000: return 50
+    elif price < 200000: return 100
+    elif price < 500000: return 500
+    else: return 1000
+
 # 코스피/코스닥 소속 시장 캐싱 딕셔너리
 _STOCK_MARKET_CACHE = {}
 
@@ -122,6 +132,7 @@ async def load_or_init_settings(session):
         'gemini_tp_pct': 1.5,
         'gemini_sl_pct': 1.0,
         'gemini_filter_lvl': 3,
+        'buy_yield_ticks': 3,
         'nxt_scan_enabled': False,
         'custom_watchlist': {},
         'engine_gem_on': True,
@@ -382,16 +393,19 @@ async def main():
                             current_assets = await kiwoom_api.get_estimated_assets(session)
                             if current_assets is None: current_assets = user_settings.get('base_amount', 0)
                             
+                            base_amount = user_settings.get('base_amount', current_assets)
                             target_date = user_settings.get('target_date', '2026-12-20')
                             target_amt = user_settings.get('target_amount', 100000000)
                             rem_days = get_remaining_trading_days(today_str, target_date)
                             
                             needed_amt = target_amt - current_assets
+                            today_profit = current_assets - base_amount
                             
                             msg = f"🎯 [목표 달성 플래너]\n\n"
                             msg += f"• 목표일: {target_date} (남은 영업일: {rem_days}일)\n"
                             msg += f"• 목표 금액: {target_amt:,}원\n"
                             msg += f"• 현재 자산: {current_assets:,}원\n"
+                            msg += f"• 기준 자산: {base_amount:,}원\n"
                             
                             if needed_amt <= 0:
                                 msg += "\n🎉 **목표 금액을 이미 달성했습니다!** 축하합니다!"
@@ -400,29 +414,30 @@ async def main():
                             else:
                                 daily_req = needed_amt / rem_days
                                 daily_pct = (daily_req / current_assets) * 100 if current_assets > 0 else 0
+                                simple_surplus = today_profit - daily_req
+                                simple_surplus_str = f"+{int(simple_surplus):,}" if simple_surplus > 0 else f"{int(simple_surplus):,}"
                                 
                                 compound_rate = (target_amt / current_assets) ** (1 / rem_days) - 1
                                 compound_daily_req = current_assets * compound_rate
                                 compound_daily_pct = compound_rate * 100
-                                
-                                base_amount = user_settings.get('base_amount', current_assets)
-                                today_profit = current_assets - base_amount
-                                surplus_profit = today_profit - compound_daily_req
-                                surplus_str = f"+{int(surplus_profit):,}" if surplus_profit > 0 else f"{int(surplus_profit):,}"
+                                compound_surplus = today_profit - compound_daily_req
+                                compound_surplus_str = f"+{int(compound_surplus):,}" if compound_surplus > 0 else f"{int(compound_surplus):,}"
 
                                 msg += f"• 남은 금액: {needed_amt:,}원\n\n"
                                 
                                 msg += f"📌 **[단리 기준 (단순 평균)]**\n"
-                                msg += f"• 하루 평균 필요액: {int(daily_req):,}원 ({daily_pct:.2f}%)\n\n"
+                                msg += f"• 오늘 목표 수익금: {int(daily_req):,}원 ({daily_pct:.2f}%)\n"
+                                msg += f"👉 **목표 대비 초과/미달: {simple_surplus_str}원**\n\n"
                                 
                                 msg += f"🔥 **[복리 기준 (오늘의 권장 목표)]**\n"
                                 msg += f"• 오늘 목표 수익금: {int(compound_daily_req):,}원 ({compound_daily_pct:.2f}%)\n"
                                 msg += f"• 오늘 실제 수익금: {int(today_profit):,}원\n"
-                                msg += f"👉 **목표 대비 초과/미달: {surplus_str}원**\n"
+                                msg += f"👉 **목표 대비 초과/미달: {compound_surplus_str}원**\n"
                                 
                             reply_markup = {
                                 "inline_keyboard": [
-                                    [{"text": "🗓️ 목표일 변경", "callback_data": "set_target_date"}, {"text": "💰 목표금액 변경", "callback_data": "set_target_amount"}]
+                                    [{"text": "🗓️ 목표일 변경", "callback_data": "set_target_date"}, {"text": "💰 목표금액 변경", "callback_data": "set_target_amount"}],
+                                    [{"text": "🔄 기준 자산 갱신", "callback_data": "set_base"}]
                                 ]
                             }
                             await send_tg_message(msg, reply_markup=reply_markup)
@@ -642,6 +657,7 @@ async def main():
                             try:
                                 val = float(cmd.replace(',', '').strip())
                                 if awaiting_setting in ['base', 'risk']: user_settings[f"{awaiting_setting}_amount"] = int(val)
+                                elif awaiting_setting == 'buy_yield_ticks': user_settings['buy_yield_ticks'] = int(val)
                                 elif awaiting_setting == 'gemini_amount': user_settings['gemini_amount'] = int(val)
                                 elif awaiting_setting == 'gemini_tp': user_settings['gemini_tp_pct'] = val
                                 elif awaiting_setting == 'gemini_sl': user_settings['gemini_sl_pct'] = val
@@ -663,6 +679,7 @@ async def main():
                         btn_sync = "🟢 미보유 자동삭제 ON" if user_settings.get('auto_remove_unheld', False) else "🔴 미보유 자동삭제 OFF"
                         nxt_status = "🟢 ON (연장장 포함)" if user_settings.get('nxt_scan_enabled', False) else "🔴 OFF (정규장 전용)"
                         btn_gem_lvl = f"🎚️ 제미나이 필터: Lv.{user_settings.get('gemini_filter_lvl', 3)}"
+                        btn_yield = f"⬆️ 호가 양보: +{user_settings.get('buy_yield_ticks', 3)}틱"
                         
                         msg = f"⚙️ [시스템 세팅 현황]\n\n"
                         msg += f"📘 포트폴리오 및 랩탑 스윙 설정\n"
@@ -684,7 +701,8 @@ async def main():
                                 [{"text": btn_time, "callback_data": "toggle_time"}, {"text": btn_sync, "callback_data": "toggle_sync"}],
                                 [{"text": btn_gem_lvl, "callback_data": "cycle_gem_lvl"}, {"text": "자동 진입금액", "callback_data": "set_gemini_amount"}],
                                 [{"text": "수동 손실비용", "callback_data": "set_risk"}, {"text": "스윙 손익비", "callback_data": "set_autorr"}],
-                                [{"text": "NXT 스캔 전환", "callback_data": "toggle_nxt"}, {"text": "기준 자산 갱신", "callback_data": "set_base"}]
+                                [{"text": "NXT 스캔 전환", "callback_data": "toggle_nxt"}, {"text": "기준 자산 갱신", "callback_data": "set_base"}],
+                                [{"text": btn_yield, "callback_data": "set_buy_yield"}]
                             ]
                         }
                         await send_tg_message(msg, reply_markup=reply_markup)
@@ -693,6 +711,11 @@ async def main():
                     if cmd.startswith('cb:'):
                         cb_data = cmd.replace('cb:', '')
                         
+                        if cb_data == 'set_buy_yield':
+                            awaiting_setting = 'buy_yield_ticks'
+                            await send_tg_message("✏️ 매수 시 양보할 호가 틱(Tick) 수를 숫자로 입력하세요 (예: 3):")
+                            continue
+
                         if cb_data == 'cycle_gem_lvl':
                             lvl = user_settings.get('gemini_filter_lvl', 3)
                             lvl = lvl + 1 if lvl < 3 else 1
@@ -782,6 +805,7 @@ async def main():
                 today_str = now.strftime('%Y%m%d')
                 is_weekend = (now.weekday() >= 5)
                 is_active_day = not is_weekend and not is_paused
+                is_trade_time = dt_time(9, 0) <= now.time() <= (dt_time(20, 0) if user_settings.get('nxt_scan_enabled', False) else dt_time(15, 30))
 
                 # 매일 아침 초기화
                 if now.hour == 7 and now.minute == 55 and last_daily_reset_date != today_str:
@@ -802,7 +826,7 @@ async def main():
                     last_cleared_hour = now.hour
 
                 # 1분 단위 잔고 상태 동기화 (수동 매도 감지)
-                if is_active_day and (current_timestamp - last_sync_time > 60):
+                if is_active_day and is_trade_time and (current_timestamp - last_sync_time > 60):
                     if auto_watch_list and user_settings.get('auto_remove_unheld', False):
                         holdings = await kiwoom_api.get_holdings_data(session)
                         if holdings is not None:
@@ -990,18 +1014,22 @@ async def main():
                                                 alerted_obs.add(alert_key)
                                                 await save_alerted_obs(alerted_obs)
                                                 entry = gemini_data['entry_price']
-                                                qty = user_settings.get('gemini_amount', 500000) // entry
+                                                yield_ticks = user_settings.get('buy_yield_ticks', 3)
+                                                tick_size = strategy.get_tick_size(entry) if hasattr(strategy, 'get_tick_size') else _get_tick_size(entry)
+                                                order_price = entry + (tick_size * yield_ticks)
+                                                
+                                                qty = user_settings.get('gemini_amount', 500000) // order_price
                                                 if qty > 0:
-                                                    buy_res, odno = await kiwoom_api.buy_limit_order(session, code, qty, entry)
+                                                    buy_res, odno = await kiwoom_api.buy_limit_order(session, code, qty, order_price)
                                                     if "✅" in buy_res:
                                                         gemini_data['meta']['macro_pct'] = current_macro_pct 
                                                         gemini_data['meta']['macro_trend'] = m_state.get('trend', '정배열')
                                                         gemini_data['meta']['macro_gap'] = m_state.get('gap', 0.0)
-                                                        auto_watch_list[code] = {'name': stock_dict[code], 'market': market, 'qty': qty, 'entry': entry, 'sl': gemini_data['sl_price'], 'tp': gemini_data['dynamic_tp'], 'status': 'pending', 'odno': odno, 'is_gemini': True, 'meta': gemini_data['meta'], 'entry_time': time.time()}
+                                                        auto_watch_list[code] = {'name': stock_dict[code], 'market': market, 'qty': qty, 'entry': order_price, 'sl': gemini_data['sl_price'], 'tp': gemini_data['dynamic_tp'], 'status': 'pending', 'odno': odno, 'is_gemini': True, 'meta': gemini_data['meta'], 'entry_time': time.time(), 'original_entry': entry}
                                                         await save_watch_list(redis_client, auto_watch_list, use_redis)
                                                         if kiwoom_api.ws_client: await kiwoom_api.ws_client.subscribe(code)
                                                         msg = f"🤖 [제미나이 눌림목 대기매수] {stock_dict[code]} {qty}주\n"
-                                                        msg += f"• 대기 매수가: {entry:,}원 (지정가)\n"
+                                                        msg += f"• 대기 매수가: {order_price:,}원 (지정가, +{yield_ticks}호가 양보)\n"
                                                         msg += f"• 체결 시 목표가: {gemini_data['dynamic_tp']:,}원 (+{user_settings.get('gemini_tp_pct', 1.5)}%)\n"
                                                         msg += f"• 체결 시 손절가: {gemini_data['sl_price']:,}원 (-{user_settings.get('gemini_sl_pct', 1.0)}%)\n"
                                                         msg += f"• 진단: {gemini_data['meta'].get('diag_msg', '확인불가')}"
@@ -1022,17 +1050,21 @@ async def main():
                                                 alerted_obs.add(alert_key)
                                                 await save_alerted_obs(alerted_obs)
                                                 entry = lap_data['entry_price']
+                                                yield_ticks = user_settings.get('buy_yield_ticks', 3)
+                                                tick_size = strategy.get_tick_size(entry) if hasattr(strategy, 'get_tick_size') else _get_tick_size(entry)
+                                                order_price = entry + (tick_size * yield_ticks)
+                                                
                                                 qty = lap_data['qty'] 
                                                 if qty > 0:
-                                                    buy_res, odno = await kiwoom_api.buy_limit_order(session, code, qty, entry)
+                                                    buy_res, odno = await kiwoom_api.buy_limit_order(session, code, qty, order_price)
                                                     if "✅" in buy_res:
                                                         lap_data['meta']['macro_pct'] = current_macro_pct 
                                                         lap_data['meta']['macro_trend'] = m_state.get('trend', '정배열')
                                                         lap_data['meta']['macro_gap'] = m_state.get('gap', 0.0)
-                                                        auto_watch_list[code] = {'name': stock_dict[code], 'market': market, 'qty': qty, 'entry': entry, 'sl': lap_data['sl_price'], 'tp': lap_data['dynamic_tp'], 'status': 'pending', 'odno': odno, 'is_laptop': True, 'meta': lap_data['meta'], 'entry_time': time.time()}
+                                                        auto_watch_list[code] = {'name': stock_dict[code], 'market': market, 'qty': qty, 'entry': order_price, 'sl': lap_data['sl_price'], 'tp': lap_data['dynamic_tp'], 'status': 'pending', 'odno': odno, 'is_laptop': True, 'meta': lap_data['meta'], 'entry_time': time.time(), 'original_entry': entry}
                                                         await save_watch_list(redis_client, auto_watch_list, use_redis)
                                                         if kiwoom_api.ws_client: await kiwoom_api.ws_client.subscribe(code)
-                                                        await send_tg_message(f"💻 [랩탑 스윙 대기매수] {stock_dict[code]} {qty}주 (매수가: {entry:,}원)")
+                                                        await send_tg_message(f"💻 [랩탑 스윙 대기매수] {stock_dict[code]} {qty}주 (매수가: {order_price:,}원, +{yield_ticks}호가 양보)")
                                             continue
                     last_scan_time = time.time()
                 await asyncio.sleep(1)
@@ -1048,8 +1080,9 @@ async def main():
                 now = datetime.now(KST)
                 is_weekend = (now.weekday() >= 5)
                 is_active_day = not is_weekend and not is_paused
+                is_monitor_time = dt_time(9, 0) <= now.time() <= (dt_time(20, 0) if user_settings.get('nxt_scan_enabled', False) else dt_time(15, 30))
 
-                if is_active_day and auto_watch_list and (current_timestamp - last_monitor_time >= 1):
+                if is_active_day and is_monitor_time and auto_watch_list and (current_timestamp - last_monitor_time >= 1):
                     state_changed = False
                     
                     for code, cond in list(auto_watch_list.items()):
@@ -1068,7 +1101,7 @@ async def main():
                                 cond['max_reached'] = rt_price
                                 cond['min_reached'] = rt_price # 🚨 MAE 추적 시작점
                                 state_changed = True
-                                await send_tg_message(f"🟢 [{stock_name}] 눌림목 매수 체결 확인! 감시 활성화.")
+                                await send_tg_message(f"🟢 [{stock_name}] 매수 체결 확인! 감시 활성화.")
                             continue 
                         
                         if cond['status'] == 'active':
@@ -1127,7 +1160,7 @@ async def main():
                             # 3. 트레일링 스탑 (절반 익절 후)
                             if cond.get('half_sold'):
                                 new_sl_raw = int(cond['max_reached'] * 0.98)
-                                tick = strategy.get_tick_size(new_sl_raw) if hasattr(strategy, 'get_tick_size') else 1
+                                tick = strategy.get_tick_size(new_sl_raw) if hasattr(strategy, 'get_tick_size') else _get_tick_size(new_sl_raw)
                                 new_sl = (new_sl_raw // tick) * tick if tick > 1 else new_sl_raw
                                     
                                 if new_sl > cond['sl']:

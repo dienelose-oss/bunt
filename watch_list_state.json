@@ -1,82 +1,53 @@
 {
-    "475150": {
-        "name": "SK\uc774\ud130\ub2c9\uc2a4",
-        "entry": 62300,
-        "sl": 0,
-        "tp": 63300,
+    "050890": {
+        "name": "\uc3e0\ub9ac\ub4dc",
+        "market": "KOSDAQ",
+        "qty": 62,
+        "entry": 16010,
+        "sl": 16310,
+        "tp": 0,
         "status": "active",
-        "half_sold": false,
-        "max_reached": 62300,
-        "odno": "0136580",
+        "odno": "0253040",
         "is_gemini": true,
         "meta": {
-            "vol_burst_ratio": 3.09,
-            "entry_atr": 1053.57,
+            "vol_burst_ratio": 2.81,
+            "entry_atr": 275.71,
+            "vwap_gap": 2.91,
             "upper_tail_ratio": 0,
             "strategy": "GEMINI",
             "diag_msg": "\ubaa8\ub4e0 \uc870\uac74 \ucda9\uc871(Lv.3\uae09 \uc644\ubcbd)",
-            "macro_pct": -1.02
+            "macro_pct": 0.92,
+            "macro_trend": "\uc815\ubc30\uc5f4",
+            "macro_gap": 0.0
         },
-        "entry_time": 1774915420.7220137
+        "entry_time": 1775780693.5731301,
+        "original_entry": 15980,
+        "max_reached": 16650,
+        "min_reached": 15890,
+        "half_sold": true
     },
-    "006110": {
-        "name": "\uc0bc\uc544\uc54c\ubbf8\ub284",
-        "entry": 40200,
-        "sl": 39750,
-        "tp": 40850,
+    "046970": {
+        "name": "\uc6b0\ub9ac\ub85c",
+        "market": "KOSDAQ",
+        "qty": 264,
+        "entry": 7550,
+        "sl": 7440,
+        "tp": 7640,
         "status": "pending",
-        "half_sold": false,
-        "max_reached": 40200,
-        "odno": "0703327",
+        "odno": "0288088",
         "is_gemini": true,
         "meta": {
-            "vol_burst_ratio": 3.46,
-            "entry_atr": 242.86,
+            "vol_burst_ratio": 3.12,
+            "entry_atr": 168.57,
+            "vwap_gap": 1.72,
             "upper_tail_ratio": 0,
             "strategy": "GEMINI",
             "diag_msg": "\ubaa8\ub4e0 \uc870\uac74 \ucda9\uc871(Lv.3\uae09 \uc644\ubcbd)",
-            "macro_pct": -4.13
+            "macro_pct": 0.82,
+            "macro_trend": "\uc815\ubc30\uc5f4",
+            "macro_gap": 0.0
         },
-        "entry_time": 1774935026.3414352
-    },
-    "001510": {
-        "name": "SK\uc99d\uad8c",
-        "entry": 2150,
-        "sl": 2125,
-        "tp": 2185,
-        "status": "active",
-        "half_sold": false,
-        "max_reached": 2155,
-        "odno": "0719490",
-        "is_gemini": true,
-        "meta": {
-            "vol_burst_ratio": 3.61,
-            "entry_atr": 13.21,
-            "upper_tail_ratio": 0,
-            "strategy": "GEMINI",
-            "diag_msg": "\ubaa8\ub4e0 \uc870\uac74 \ucda9\uc871(Lv.3\uae09 \uc644\ubcbd)",
-            "macro_pct": 6.11
-        },
-        "entry_time": 1775023765.6452544
-    },
-    "394420": {
-        "name": "\ub9ac\uc13c\uc2a4\uba54\ub514\uceec",
-        "entry": 23950,
-        "sl": 23350,
-        "tp": 24350,
-        "status": "active",
-        "half_sold": false,
-        "max_reached": 23950,
-        "odno": "0728058",
-        "is_gemini": true,
-        "meta": {
-            "vol_burst_ratio": 8.58,
-            "entry_atr": 380.36,
-            "upper_tail_ratio": 0,
-            "strategy": "GEMINI",
-            "diag_msg": "\ubaa8\ub4e0 \uc870\uac74 \ucda9\uc871(Lv.3\uae09 \uc644\ubcbd)",
-            "macro_pct": 6.19
-        },
-        "entry_time": 1775024142.5610604
+        "entry_time": 1775781202.835471,
+        "original_entry": 7520
     }
 }
