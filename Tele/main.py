@@ -34,6 +34,7 @@ async def main():
 
     stock_dict = {}
     pending_setups = {} 
+    accumulated_targets = {}  # 🚨 FIFO 누적 추적용 딕셔너리 추가
     
     last_monitor_time = 0
     last_scan_time = 0
@@ -71,7 +72,7 @@ async def main():
                 [{"text": "📈 관심종목 관리", "callback_data": "menu_watch"}, {"text": "👀 감시 현황", "callback_data": "menu_monitor"}],
                 [{"text": "💰 계좌 잔고", "callback_data": "menu_balance"}, {"text": "📊 누적 통계 분석", "callback_data": "menu_analysis"}],
                 [{"text": "⚙️ 엔진 세팅", "callback_data": "menu_setting"}, {"text": "💡 도움말", "callback_data": "menu_help"}],
-                [{"text": "💸 미수/반대매 방어 (D-2)", "callback_data": "menu_margin_clear"}],
+                [{"text": "💸 미수/반대매매 방어 (D-2)", "callback_data": "menu_margin_clear"}],
                 [{"text": "🎯 목표 달성 플래너", "callback_data": "menu_planner"}]
             ]
         }
@@ -87,7 +88,7 @@ async def main():
             nonlocal is_paused, current_macro_pct, last_engine_scan_time, max_assets_today, max_assets_time, \
                      awaiting_setting, last_monitor_time, last_scan_time, last_asset_record_time, \
                      last_auto_chart_time, last_sync_time, last_cleared_hour, last_daily_reset_date, last_snapshot_date, \
-                     last_macro_state, last_scanned_targets, daily_target_notified
+                     last_macro_state, last_scanned_targets, daily_target_notified, accumulated_targets
             
             while True:
                 try:
@@ -504,6 +505,7 @@ async def main():
                                     elif awaiting_setting == 'cancel_timeout': user_settings['cancel_timeout_mins'] = int(val)
                                     elif awaiting_setting == 'autorr': user_settings['auto_rr_ratio'] = val
                                     elif awaiting_setting == 'target_amount': user_settings['target_amount'] = int(val)
+                                    elif awaiting_setting == 'max_tracking_items': user_settings['max_tracking_items'] = int(val)
                                         
                                     await send_tg_message("✅ 설정 변경이 완료되었습니다.")
                                     def _save_set():
@@ -522,6 +524,8 @@ async def main():
                             btn_gem_lvl = f"🎚️ 제미나이 필터: Lv.{user_settings.get('gemini_filter_lvl', 2)}"
                             btn_rvol_lvl = f"🎚️ RVOL 필터: Lv.{user_settings.get('rvol_filter_lvl', 2)}"
                             btn_yield = f"⬆️ 호가 양보: +{user_settings.get('buy_yield_ticks', 3)}틱"
+                            btn_keep = "🟢 누적 추적 ON" if user_settings.get('keep_tracking_today', True) else "🔴 누적 추적 OFF"
+                            btn_max_track = f"🎯 최대 추적: {user_settings.get('max_tracking_items', 30)}개"
                             
                             msg = f"⚙️ [시스템 세팅 현황]\n\n"
                             msg += f"🔥 초단타 공통 세팅 (제미나이 & RVOLx3)\n"
@@ -550,6 +554,7 @@ async def main():
                                     [{"text": btn_rvol_lvl, "callback_data": "cycle_rvol_lvl"}, {"text": "RVOL 금액", "callback_data": "set_rvol_amount"}],
                                     [{"text": "공통 익절(TP) %", "callback_data": "set_gemini_tp"}, {"text": "공통 손절(SL) %", "callback_data": "set_gemini_sl"}],
                                     [{"text": "📉 눌림목폭(%)", "callback_data": "set_gemini_pullback"}, {"text": "수동 손실비용", "callback_data": "set_risk"}],
+                                    [{"text": btn_keep, "callback_data": "toggle_keep"}, {"text": btn_max_track, "callback_data": "set_max_track"}],
                                     [{"text": "NXT 스캔 전환", "callback_data": "toggle_nxt"}, {"text": btn_yield, "callback_data": "set_buy_yield"}]
                                 ]
                             }
@@ -559,6 +564,11 @@ async def main():
                         if cmd.startswith('cb:'):
                             cb_data = cmd.replace('cb:', '')
                             
+                            if cb_data == 'set_max_track':
+                                awaiting_setting = 'max_tracking_items'
+                                await send_tg_message("✏️ 당일 최대 누적 추적할 종목 수를 숫자로 입력하세요 (예: 30):")
+                                continue
+                                
                             if cb_data == 'set_gemini_pullback':
                                 awaiting_setting = 'gemini_pullback'
                                 await send_tg_message("✏️ 매수 대기 눌림폭(%)을 숫자로 입력하세요 (예: 1.0):")
@@ -593,7 +603,7 @@ async def main():
                                 await send_tg_message(msg)
                                 continue
 
-                            toggle_map = {'toggle_gem': 'engine_gem_on', 'toggle_rvol': 'engine_rvol_on', 'toggle_lap': 'engine_laptop_on', 'toggle_time': 'time_filter_on', 'toggle_sync': 'auto_remove_unheld'}
+                            toggle_map = {'toggle_gem': 'engine_gem_on', 'toggle_rvol': 'engine_rvol_on', 'toggle_lap': 'engine_laptop_on', 'toggle_time': 'time_filter_on', 'toggle_sync': 'auto_remove_unheld', 'toggle_keep': 'keep_tracking_today'}
                             if cb_data in toggle_map:
                                 key = toggle_map[cb_data]
                                 user_settings[key] = not user_settings.get(key, True if 'engine' in key else False)
@@ -678,7 +688,7 @@ async def main():
             nonlocal is_paused, current_macro_pct, last_engine_scan_time, max_assets_today, max_assets_time, \
                      awaiting_setting, last_monitor_time, last_scan_time, last_asset_record_time, \
                      last_auto_chart_time, last_sync_time, last_cleared_hour, last_daily_reset_date, last_snapshot_date, \
-                     daily_target_notified
+                     daily_target_notified, accumulated_targets
             
             while True:
                 try:
@@ -711,6 +721,7 @@ async def main():
                         daily_target_notified = False
                         alerted_obs.clear()
                         pending_setups.clear()
+                        accumulated_targets.clear() # 🚨 일일 누적 추적 목록 초기화
                         await save_alerted_obs(alerted_obs)
                         last_daily_reset_date = today_str
                         last_engine_scan_time = "스캔 대기 중"
@@ -872,7 +883,7 @@ async def main():
             nonlocal is_paused, current_macro_pct, last_engine_scan_time, max_assets_today, max_assets_time, \
                      awaiting_setting, last_monitor_time, last_scan_time, last_asset_record_time, \
                      last_auto_chart_time, last_sync_time, last_cleared_hour, last_daily_reset_date, last_snapshot_date, \
-                     last_macro_state, last_scanned_targets
+                     last_macro_state, last_scanned_targets, accumulated_targets
             
             while True:
                 try:
@@ -926,13 +937,27 @@ async def main():
                             macro_state['KOSPI'] = {'trend': kpi_trend, 'gap': round(kpi_gap, 2), '5ma': kpi_5, '20ma': kpi_20}
                             macro_state['KOSDAQ'] = {'trend': kdq_trend, 'gap': round(kdq_gap, 2), '5ma': kdq_5, '20ma': kdq_20}
                             
-                            # 타겟 후보 수집
+                            # 타겟 후보 수집 및 🚨 FIFO 로직 처리
                             search_20 = await kiwoom_api.get_top_20_search_rank(session)
                             volume_20 = await kiwoom_api.get_top_20_volume_rank(session)
                             
-                            target_candidates = {}
-                            if search_20: target_candidates.update(search_20)
-                            if volume_20: target_candidates.update(volume_20)
+                            new_candidates = {}
+                            if search_20: new_candidates.update(search_20)
+                            if volume_20: new_candidates.update(volume_20)
+                            
+                            if user_settings.get('keep_tracking_today', True):
+                                for code, name in new_candidates.items():
+                                    if code not in accumulated_targets:
+                                        accumulated_targets[code] = name
+                                        
+                                max_track = user_settings.get('max_tracking_items', 30)
+                                while len(accumulated_targets) > max_track:
+                                    oldest = next(iter(accumulated_targets))
+                                    del accumulated_targets[oldest]
+                                    
+                                target_candidates = accumulated_targets.copy()
+                            else:
+                                target_candidates = new_candidates.copy()
                             
                             target_codes = list(target_candidates.keys())
                             stock_dict.update(target_candidates)
@@ -1139,13 +1164,13 @@ async def main():
                                     await send_tg_message(f"⏳ [{stock_name}] 미체결 대기시간({timeout_mins}분) 초과로 매수 주문 자동 취소 완료.")
                                     continue
 
-                                if rt_price <= cond['entry']:
-                                    cond['status'] = 'active'
-                                    cond['max_reached'] = rt_price
-                                    cond['min_reached'] = rt_price 
-                                    state_changed = True
-                                    await send_tg_message(f"🟢 [{stock_name}] 매수 체결 확인! 감시 활성화.")
-                                continue 
+                            if rt_price <= cond['entry']:
+                                cond['status'] = 'active'
+                                cond['max_reached'] = rt_price
+                                cond['min_reached'] = rt_price 
+                                state_changed = True
+                                await send_tg_message(f"🟢 [{stock_name}] 매수 체결 확인! 감시 활성화.")
+                            continue 
                             
                             if cond['status'] == 'active':
                                 if 'max_reached' not in cond: cond['max_reached'] = rt_price
@@ -1233,7 +1258,7 @@ async def main():
                                         elif cond.get('is_laptop'):
                                             headers[11] = 'PullbackVolRatio'
                                             await asyncio.to_thread(write_trade_log, 'laptop_log.csv', headers, row)
-                                                
+                                            
                                         del auto_watch_list[code]
                                         if kiwoom_api.ws_client: await kiwoom_api.ws_client.unsubscribe(code)
                                         state_changed = True
