@@ -146,8 +146,11 @@ async def load_or_init_settings(session):
         'gemini_amount': 500000,
         'gemini_tp_pct': 1.5,
         'gemini_sl_pct': 1.0,
-        'gemini_filter_lvl': 3,
+        'gemini_filter_lvl': 2,
         'gemini_pullback_pct': 1.0,
+        'rvol_amount': 500000,      # 🚨 신규 RVOL 엔진 진입금액 설정
+        'rvol_filter_lvl': 2,       # 🚨 신규 RVOL 엔진 필터 레벨
+        'engine_rvol_on': True,     # 🚨 신규 RVOL 엔진 온/오프 상태
         'cancel_timeout_mins': 30,
         'buy_yield_ticks': 3,
         'nxt_scan_enabled': False,

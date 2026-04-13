@@ -114,7 +114,7 @@ def get_ema(closes_old_to_new, period):
     return ema
 
 # -----------------------------------------------------------------------------
-# 2. 제미나이 모멘텀 스캘핑 엔진 (자동 매매 - 진단 보고 기능 탑재)
+# 2-1. 제미나이 모멘텀 스캘핑 엔진 (자동 매매 - 진단 보고 기능 탑재)
 # -----------------------------------------------------------------------------
 def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filter_lvl=3):
     if not candles or len(candles) < 60: return False, {}
@@ -129,25 +129,26 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
 
     if vol_burst_ratio < 2.0: return False, {}
     
-    # 🚨 [수정 완료] VolBurst 킬 스위치 (거래량 12배 이상 폭발 시 작전/설거지 의심으로 진입 전면 차단)
+    # 🚨 VolBurst 킬 스위치 (거래량 12배 이상 폭발 시 작전/설거지 의심으로 진입 전면 차단)
     if vol_burst_ratio > 12.0: return False, {}
 
-    # 🚨 [팩트 반영] 상위 필터 조건 무조건 사전 계산
+    # 🚨 상위 필터 조건 무조건 사전 계산
     vwap = calculate_vwap(candles, today_str)
     is_above_vwap = (n1['close'] >= vwap)
     is_long_trend = check_long_trend(candles, 60)
 
-    # 설정된 레벨에 따라 진입 차단
-    if filter_lvl >= 2 and not is_above_vwap: return False, {}
+    # 🚨 Level 2 이상일 때 VWAP 0% 이상 ~ 3% 미만 밴드 필터 적용
+    if filter_lvl >= 2:
+        if not is_above_vwap: return False, {}
+        if n1['close'] >= vwap * 1.03: return False, {}  # 3% 이상 추격매수 차단
+
     if filter_lvl >= 3 and not is_long_trend: return False, {}
     
-    # 🚨 [추가된 로직] Safe-Zone: 폭발적인 빔을 쐈으나 이미 VWAP 대비 3% 초과 상승했다면 위험지대로 간주
+    # 진단 메시지 구성
     fail_reasons = []
     if not is_above_vwap: fail_reasons.append("VWAP 하회(Lv.2 미달)")
+    elif n1['close'] >= vwap * 1.03: fail_reasons.append("VWAP 3% 이상 초과(추격매수 위험)")
     if not is_long_trend: fail_reasons.append("60선 역배열(Lv.3 미달)")
-    if is_above_vwap and n1['close'] > vwap * 1.03: 
-        fail_reasons.append("VWAP 3% 이상 초과(추격매수 위험)")
-        return False, {}
 
     diag_msg = " + ".join(fail_reasons) if fail_reasons else "모든 조건 충족(Lv.3급 완벽)"
 
@@ -175,6 +176,74 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
             'vwap_gap': round(vwap_gap, 2),
             'upper_tail_ratio': 0,
             'strategy': 'GEMINI',
+            'diag_msg': diag_msg
+        }
+    }
+
+# -----------------------------------------------------------------------------
+# 2-2. RVOLx3 스캘핑 엔진 (상대 거래량 3배 폭발, 신규 엔진)
+# -----------------------------------------------------------------------------
+def check_rvol_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filter_lvl=2):
+    if not candles or len(candles) < 60: return False, {}
+    n1 = candles[1]
+    
+    # [Lv.1 공통 조건] 양봉 확인
+    if n1['close'] <= n1['open']: return False, {}
+        
+    # 최근 1시간(20개 캔들) 평균 거래량 대비 3배 폭발 (RVOL >= 3.0)
+    # n1이 candles[1]이므로, 그 이전 과거 20개는 candles[2:22]
+    past_20_vols = [c['volume'] for c in candles[2:22]]
+    avg_vol_20 = sum(past_20_vols) / len(past_20_vols) if past_20_vols else 1
+    rvol = n1['volume'] / avg_vol_20
+
+    if rvol < 3.0: return False, {}
+    
+    # 거래량 12배 이상 폭발 시 작전/설거지 의심으로 진입 전면 차단
+    if rvol > 12.0: return False, {}
+
+    # 🚨 상위 필터 조건 무조건 사전 계산
+    vwap = calculate_vwap(candles, today_str)
+    is_above_vwap = (n1['close'] >= vwap)
+    is_long_trend = check_long_trend(candles, 60)
+
+    # 🚨 Level 2 이상일 때 VWAP 0% 이상 ~ 3% 미만 밴드 필터 적용
+    if filter_lvl >= 2:
+        if not is_above_vwap: return False, {}
+        if n1['close'] >= vwap * 1.03: return False, {}  # 3% 이상 추격매수 차단
+
+    if filter_lvl >= 3 and not is_long_trend: return False, {}
+    
+    # 진단 메시지 구성
+    fail_reasons = []
+    if not is_above_vwap: fail_reasons.append("VWAP 하회(Lv.2 미달)")
+    elif n1['close'] >= vwap * 1.03: fail_reasons.append("VWAP 3% 이상 초과(추격매수 위험)")
+    if not is_long_trend: fail_reasons.append("60선 역배열(Lv.3 미달)")
+
+    diag_msg = " + ".join(fail_reasons) if fail_reasons else "모든 조건 충족(Lv.3급 완벽)"
+
+    entry_price = n1['close']
+    atr = calculate_atr(candles, 14)
+    
+    # 🚨 VWAP 이격도 계산 (로깅용)
+    vwap_gap = ((entry_price - vwap) / vwap * 100) if vwap > 0 else 0.0
+    
+    math_sl = entry_price * (1 - (sl_pct / 100.0))
+    sl_price = floor_to_tick(math_sl)
+    
+    tp_price = ceil_to_tick(entry_price * (1 + (tp_pct / 100.0)))
+    
+    return True, {
+        'time': n1['time'],
+        'entry_price': entry_price,
+        'sl_price': sl_price,
+        'dynamic_tp': tp_price,
+        'strategy': 'RVOL',
+        'meta': {
+            'vol_burst_ratio': round(rvol, 2),
+            'entry_atr': round(atr, 2),
+            'vwap_gap': round(vwap_gap, 2),
+            'upper_tail_ratio': 0,
+            'strategy': 'RVOL',
             'diag_msg': diag_msg
         }
     }
