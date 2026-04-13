@@ -158,6 +158,9 @@ async def load_or_init_settings(session):
         'auto_remove_unheld': False,
         'target_date': '2026-12-20',
         'target_amount': 100000000,
+        'planner_rate_type': '복리',
+        'planner_sell_target': 'auto',
+        'auto_shutdown_on_target': False,
     }
     if os.path.exists(SETTINGS_FILE):
         try:
