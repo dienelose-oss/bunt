@@ -156,6 +156,11 @@ async def load_or_init_settings(session):
         'nxt_scan_enabled': False,
         'keep_tracking_today': True,
         'max_tracking_items': 30,
+        'profit_preserve_on': False,      # 🚨 이익 보존 ON/OFF
+        'profit_preserve_amount': 0,     # 🚨 고정 보존 금액
+        'profit_trailing_on': False,      # 🚨 비율 추적 ON/OFF
+        'profit_trailing_pct': 20.0,      # 🚨 최고점 대비 하락 비율(%)
+        'protected_codes': [],            # 🚨 보호 종목 리스트
         'custom_watchlist': {},
         'engine_gem_on': True,
         'engine_laptop_on': True, 

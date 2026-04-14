@@ -1,50 +1,26 @@
 {
-    "092790": {
-        "name": "\ub125\uc2a4\ud2f8",
-        "market": "KOSPI",
-        "qty": 115,
-        "entry": 17350,
-        "sl": 17170,
-        "tp": 17620,
-        "status": "pending",
-        "odno": "0730444",
-        "is_gemini": true,
-        "meta": {
-            "vol_burst_ratio": 2.08,
-            "entry_atr": 83.57,
-            "vwap_gap": -1.26,
-            "upper_tail_ratio": 0,
-            "strategy": "GEMINI",
-            "diag_msg": "VWAP \ud558\ud68c(Lv.2 \ubbf8\ub2ec)",
-            "macro_pct": 0.5,
-            "macro_trend": "\uc815\ubc30\uc5f4",
-            "macro_gap": 0.0
-        },
-        "entry_time": 1776059154.5062728,
-        "original_entry": 17530
-    },
-    "218410": {
-        "name": "RFHIC",
+    "037030": {
+        "name": "\ud30c\uc6cc\ub137",
         "market": "KOSDAQ",
-        "qty": 21,
-        "entry": 93300,
-        "sl": 92400,
-        "tp": 94800,
+        "qty": 236,
+        "entry": 8470,
+        "sl": 8380,
+        "tp": 8610,
         "status": "pending",
-        "odno": "0732990",
+        "odno": "0794087",
         "is_gemini": true,
         "meta": {
-            "vol_burst_ratio": 2.58,
-            "entry_atr": 521.43,
-            "vwap_gap": 1.34,
+            "vol_burst_ratio": 2.25,
+            "entry_atr": 81.07,
+            "vwap_gap": 1.05,
             "upper_tail_ratio": 0,
             "strategy": "GEMINI",
             "diag_msg": "\ubaa8\ub4e0 \uc870\uac74 \ucda9\uc871(Lv.3\uae09 \uc644\ubcbd)",
-            "macro_pct": 0.51,
+            "macro_pct": 2.12,
             "macro_trend": "\uc815\ubc30\uc5f4",
             "macro_gap": 0.0
         },
-        "entry_time": 1776059281.7046688,
-        "original_entry": 94300
+        "entry_time": 1776144830.4617605,
+        "original_entry": 8560
     }
 }

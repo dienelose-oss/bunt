@@ -1,0 +1,2 @@
+﻿Date,Code,Name,Market,TimeSession,EntryPrice,ExitPrice,Slippage(%),PnL(%),MinPnL(%),MaxPnL(%),VolBurstRatio,EntryATR,EntryVWAPGap(%),MacroTrend,MacroGap(%),HoldTime(s),ExitReason
+2026-04-14 10:34:19,072950,빛샘전자,KOSDAQ,Mid(09:30~14:00),17700,17700,0.0,0.0,0.0,0.0,3.31,339.29,2.01,정배열,0.0,77,본절방어

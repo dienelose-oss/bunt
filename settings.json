@@ -1,5 +1,5 @@
 {
-    "base_amount": 15900406,
+    "base_amount": 18276401,
     "risk_amount": 50000,
     "auto_rr_ratio": 2.0,
     "gemini_amount": 2000000,
@@ -13,6 +13,13 @@
     "cancel_timeout_mins": 5,
     "buy_yield_ticks": 3,
     "nxt_scan_enabled": true,
+    "keep_tracking_today": true,
+    "max_tracking_items": 100,
+    "profit_preserve_on": false,
+    "profit_preserve_amount": 2000000,
+    "profit_trailing_on": false,
+    "profit_trailing_pct": 20.0,
+    "protected_codes": [],
     "custom_watchlist": {
         "024060": "\ud765\uad6c\uc11d\uc720",
         "003280": "\ud765\uc544\ud574\uc6b4"
@@ -25,7 +32,7 @@
     "target_amount": 65000000,
     "planner_rate_type": "\ub2e8\ub9ac",
     "planner_sell_target": "auto",
-    "auto_shutdown_on_target": true,
+    "auto_shutdown_on_target": false,
     "rr_ratio": 1.5,
     "min_tick_diff": 8,
     "max_entry_gap_ticks": 50,
@@ -33,5 +40,6 @@
     "engine_ob_on": true,
     "engine_bpr_on": true,
     "circuit_breaker_on": false,
-    "gemini_api_key": ""
+    "gemini_api_key": "",
+    "keep_trading_after_sell": true
 }
