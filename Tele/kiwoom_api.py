@@ -227,11 +227,12 @@ async def buy_limit_order(session, stock_code, qty, price):
         
     return f"❌ 매수 실패: {res.get('return_msg', res.get('msg1', '응답없음'))}", None
 
-async def cancel_order(session, stock_code, orgn_odno):
+# 🚨 주문 취소 시 수량(qty) 파라미터를 추가로 받을 수 있게 수정했습니다. (기본값 0)
+async def cancel_order(session, stock_code, orgn_odno, qty=0):
     params = {
         'dmst_stex_tp': 'AUTO', 
         'stk_cd': stock_code, 
-        'ord_qty': '0', 
+        'ord_qty': str(qty) if qty > 0 else '0', # 수정: 매수 주문 걸었던 수량만큼 전달
         'ord_uv': '0', 
         'trde_tp': '00', 
         'ord_tp': '3',
