@@ -51,7 +51,8 @@ async def main():
     last_daily_reset_date = None
     last_snapshot_date = None 
     awaiting_setting = None
-    current_macro_pct = 0.0
+    
+    current_macro_pct = 0.0  # 🚨 누락되었던 매크로 지수 변수 초기화 복구 완료
     daily_target_notified = False  
     
     last_engine_scan_time = "스캔 대기 중"
@@ -79,8 +80,8 @@ async def main():
                 [{"text": "📈 관심종목 관리", "callback_data": "menu_watch"}, {"text": "👀 감시 현황", "callback_data": "menu_monitor"}],
                 [{"text": "💰 계좌 잔고", "callback_data": "menu_balance"}, {"text": "📊 누적 통계 분석", "callback_data": "menu_analysis"}],
                 [{"text": "⚙️ 엔진 세팅", "callback_data": "menu_setting"}, {"text": "💡 도움말", "callback_data": "menu_help"}],
-                [{"text": "💸 미수/반대매매 방어 (D-2)", "callback_data": "menu_margin_clear"}],
-                [{"text": "🎯 목표 달성 플래너", "callback_data": "menu_planner"}]
+                [{"text": "💸 미수/반대매 방어 (D-2)", "callback_data": "menu_margin_clear"}],
+                [{"text": "🎯 목표달성 플래너 세팅", "callback_data": "menu_planner"}]
             ]
         }
         await send_tg_message(welcome_msg, reply_markup=dash_reply_markup)
@@ -94,9 +95,9 @@ async def main():
             await asyncio.to_thread(_save)
 
         # ---------------------------------------------------------------------
-        # 🛠️ [최적화 3] 플래너 메시지 조립 헬퍼 함수 (메인 루프 다이어트)
+        # 🛠️ [요구사항 2] 메인 대시보드 & 플래너 통합 렌더링 함수
         # ---------------------------------------------------------------------
-        async def build_planner_message():
+        async def build_dashboard_message():
             try:
                 today_str_local = datetime.now(KST).strftime('%Y%m%d')
                 current_assets = await kiwoom_api.get_estimated_assets(session)
@@ -141,11 +142,11 @@ async def main():
                     
                 alpha_amt = current_assets - hypo_asset
                 rate_type = str(user_settings.get('planner_rate_type', '복리'))
-                sell_target = str(user_settings.get('planner_sell_target', 'auto'))
-                auto_shutdown = bool(user_settings.get('auto_shutdown_on_target', False))
-                k_on = user_settings.get('keep_trading_after_sell', False)
                 
-                msg = f"🎯 [목표 달성 플래너]\n\n"
+                msg = f"🎛️ [메인 관제탑 대시보드]\n"
+                msg += f"📡 최근 엔진 스캔: {last_engine_scan_time}\n"
+                msg += f"──────────────────\n"
+                msg += f"🎯 [목표 달성 플래너 현황]\n"
                 msg += f"• 목표일: {target_date} (남은 영업일: {rem_days}일)\n"
                 msg += f"• 목표 금액: {target_amt:,}원\n"
                 msg += f"• 현재 자산: {current_assets:,}원\n"
@@ -184,35 +185,20 @@ async def main():
 
                     msg += f"🔥 **[복리 기준 (오늘의 권장 목표)]**{' 👈 (현재 셧다운 기준)' if rate_type == '복리' else ''}\n"
                     msg += f"• 오늘 목표 수익금: {int(daily_req_compound):,}원 ({daily_pct_compound:.2f}%)\n"
-                    msg += f"👉 **목표 대비 초과/미달: {surplus_compound_str}원**\n\n"
+                    msg += f"👉 **목표 대비 초과/미달: {surplus_compound_str}원**\n"
 
-                p_on = user_settings.get('profit_preserve_on', False)
-                p_amt = user_settings.get('profit_preserve_amount', 0)
-                t_on = user_settings.get('profit_trailing_on', False)
-                t_pct = user_settings.get('profit_trailing_pct', 20.0)
-                protected = user_settings.get('protected_codes', [])
-
-                msg += f"🛡️ [이익 보존 및 셧다운 보호 현황]\n"
-                msg += f"• 고정 보존: {'🟢 ON' if p_on else '🔴 OFF'} ({p_amt:,}원 하락 시)\n"
-                msg += f"• 추적 보존: {'🟢 ON' if t_on else '🔴 OFF'} (최고 {int(max_profit_today):,}원 대비 -{t_pct}% 시)\n"
-                msg += f"• 보호 종목: {len(protected)}개 예외 등록됨\n"
-                msg += f"• 목표 달성 셧다운: {'🟢 ON' if auto_shutdown else '🔴 OFF'}\n"
-                msg += f"• 청산 후 계속매매: {'🟢 ON' if k_on else '🔴 OFF'}\n"
-                msg += f"• 셧다운 시 매도 범위: {'🤖 시스템 종목만' if sell_target == 'auto' else '전체 현금 종목'}\n"
-                    
                 reply_markup = {
                     "inline_keyboard": [
-                        [{"text": "🗓️ 목표일 변경", "callback_data": "set_target_date"}, {"text": "💰 목표금액 변경", "callback_data": "set_target_amount"}],
-                        [{"text": f"🔄 셧다운 기준: {rate_type}", "callback_data": "toggle_planner_rate"}, {"text": "🔄 기준 자산 갱신", "callback_data": "set_base"}],
-                        [{"text": "🛡️ 보호종목 확인", "callback_data": "view_protected"}, {"text": f"범위: {'시스템' if sell_target=='auto' else '전체'}", "callback_data": "toggle_planner_sell"}],
-                        [{"text": f"고정보존 {'끄기' if p_on else '켜기'}", "callback_data": "toggle_profit_lock"}, {"text": "💰 보존금액 설정", "callback_data": "set_profit_amt"}],
-                        [{"text": f"추적보존 {'끄기' if t_on else '켜기'}", "callback_data": "toggle_trailing_lock"}, {"text": "📉 추적비율 설정", "callback_data": "set_trailing_pct"}],
-                        [{"text": f"목표셧다운 {'끄기' if auto_shutdown else '켜기'}", "callback_data": "toggle_planner_shutdown"}, {"text": f"계속매매 {'끄기' if k_on else '켜기'}", "callback_data": "toggle_keep_trading"}]
+                        [{"text": "📈 관심종목 관리", "callback_data": "menu_watch"}, {"text": "👀 감시 현황", "callback_data": "menu_monitor"}],
+                        [{"text": "💰 계좌 잔고", "callback_data": "menu_balance"}, {"text": "📊 누적 통계 분석", "callback_data": "menu_analysis"}],
+                        [{"text": "⚙️ 엔진 세팅", "callback_data": "menu_setting"}, {"text": "💡 도움말", "callback_data": "menu_help"}],
+                        [{"text": "💸 미수/반대매 방어 (D-2)", "callback_data": "menu_margin_clear"}],
+                        [{"text": "🎯 목표달성 플래너 세팅", "callback_data": "menu_planner"}]
                     ]
                 }
                 return msg, reply_markup
             except Exception as e:
-                return f"❌ 플래너 연산 중 데이터 오류가 발생했습니다: {str(e)}\n설정값(기준자산 등)이 정상적인 숫자인지 확인하세요.", None
+                return f"❌ 대시보드 연산 중 데이터 오류가 발생했습니다: {str(e)}\n설정값(기준자산 등)이 정상적인 숫자인지 확인하세요.", None
 
         # ---------------------------------------------------------------------
         # 🛠️ [최적화 4] 공통 로그/매도 헬퍼 함수
@@ -298,13 +284,12 @@ async def main():
                     await send_tg_message(msg)
 
         # ---------------------------------------------------------------------
-        # 공통 함수: 이익 보존/목표 달성 셧다운 실행 엔진 (시장가 펀치 적용 및 계속매매 지원)
+        # 공통 함수: 이익 보존/목표 달성 셧다운 실행 엔진
         # ---------------------------------------------------------------------
         async def execute_shutdown_sequence(reason_title, detail_msg, is_emergency=False):
             nonlocal max_profit_today
             await send_tg_message(f"🚨 [{reason_title}]\n{detail_msg}\n지정된 보호 예외 종목을 제외하고 즉시 **시장가**로 전량 매도를 진행합니다.")
             
-            # 🚨 셧다운 시 미체결 대기(pending) 매수 주문 먼저 찾아 일괄 취소 (유령 체결 방지)
             for code, cond in list(auto_watch_list.items()):
                 if cond.get('status') == 'pending' and cond.get('odno'):
                     try:
@@ -343,8 +328,7 @@ async def main():
                     except Exception as e:
                         await send_tg_message(f"❌ {code} 시장가 매도 실패: {e}")
             
-            # 매도 후 기준 자산 및 최고 수익금 갱신 로직 추가
-            await asyncio.sleep(2) # 잔고 갱신 대기
+            await asyncio.sleep(2) 
             current_assets = await kiwoom_api.get_estimated_assets(session)
             if current_assets is not None:
                 user_settings['base_amount'] = int(float(str(current_assets).replace(',', '').strip()))
@@ -405,23 +389,40 @@ async def main():
                             continue
 
                         elif cmd == 'ㅁ':
-                            msg = f"🎛️ [메인 관제탑 대시보드]\n"
-                            msg += f"📡 최근 엔진 스캔: {last_engine_scan_time}\n\n"
-                            msg += "원하시는 메뉴를 터치하십시오."
-                            reply_markup = {
-                                "inline_keyboard": [
-                                    [{"text": "📈 관심종목 관리", "callback_data": "menu_watch"}, {"text": "👀 감시 현황", "callback_data": "menu_monitor"}],
-                                    [{"text": "💰 계좌 잔고", "callback_data": "menu_balance"}, {"text": "📊 누적 통계 분석", "callback_data": "menu_analysis"}],
-                                    [{"text": "⚙️ 엔진 세팅", "callback_data": "menu_setting"}, {"text": "💡 도움말", "callback_data": "menu_help"}],
-                                    [{"text": "💸 미수/반대매매 방어 (D-2)", "callback_data": "menu_margin_clear"}],
-                                    [{"text": "🎯 목표 달성 플래너", "callback_data": "menu_planner"}]
-                                ]
-                            }
+                            msg, reply_markup = await build_dashboard_message()
                             await send_tg_message(msg, reply_markup=reply_markup)
                             continue
 
                         elif cmd == '플래너':
-                            msg, reply_markup = await build_planner_message()
+                            rate_type = str(user_settings.get('planner_rate_type', '복리'))
+                            sell_target = str(user_settings.get('planner_sell_target', 'auto'))
+                            auto_shutdown = bool(user_settings.get('auto_shutdown_on_target', False))
+                            k_on = user_settings.get('keep_trading_after_sell', False)
+                            p_on = user_settings.get('profit_preserve_on', False)
+                            p_amt = user_settings.get('profit_preserve_amount', 0)
+                            t_on = user_settings.get('profit_trailing_on', False)
+                            t_pct = user_settings.get('profit_trailing_pct', 20.0)
+                            protected = user_settings.get('protected_codes', [])
+
+                            msg = f"⚙️ [목표달성 플래너 및 이익 보존 세팅]\n\n"
+                            msg += f"🛡️ [이익 보존 및 셧다운 보호 현황]\n"
+                            msg += f"• 고정 보존: {'🟢 ON' if p_on else '🔴 OFF'} ({p_amt:,}원 하락 시)\n"
+                            msg += f"• 추적 보존: {'🟢 ON' if t_on else '🔴 OFF'} (최고 {int(max_profit_today):,}원 대비 -{t_pct}% 시)\n"
+                            msg += f"• 보호 종목: {len(protected)}개 예외 등록됨\n"
+                            msg += f"• 목표 달성 셧다운: {'🟢 ON' if auto_shutdown else '🔴 OFF'}\n"
+                            msg += f"• 청산 후 계속매매: {'🟢 ON' if k_on else '🔴 OFF'}\n"
+                            msg += f"• 셧다운 시 매도 범위: {'🤖 시스템 종목만' if sell_target == 'auto' else '전체 현금 종목'}\n"
+
+                            reply_markup = {
+                                "inline_keyboard": [
+                                    [{"text": "🗓️ 목표일 변경", "callback_data": "set_target_date"}, {"text": "💰 목표금액 변경", "callback_data": "set_target_amount"}],
+                                    [{"text": f"🔄 셧다운 기준: {rate_type}", "callback_data": "toggle_planner_rate"}, {"text": "🔄 기준 자산 갱신", "callback_data": "set_base"}],
+                                    [{"text": "🛡️ 보호종목 확인", "callback_data": "view_protected"}, {"text": f"범위: {'시스템' if sell_target=='auto' else '전체'}", "callback_data": "toggle_planner_sell"}],
+                                    [{"text": f"고정보존 {'끄기' if p_on else '켜기'}", "callback_data": "toggle_profit_lock"}, {"text": "💰 보존금액 설정", "callback_data": "set_profit_amt"}],
+                                    [{"text": f"추적보존 {'끄기' if t_on else '켜기'}", "callback_data": "toggle_trailing_lock"}, {"text": "📉 추적비율 설정", "callback_data": "set_trailing_pct"}],
+                                    [{"text": f"목표셧다운 {'끄기' if auto_shutdown else '켜기'}", "callback_data": "toggle_planner_shutdown"}, {"text": f"계속매매 {'끄기' if k_on else '켜기'}", "callback_data": "toggle_keep_trading"}]
+                                ]
+                            }
                             await send_tg_message(msg, reply_markup=reply_markup)
                             continue
 
@@ -750,7 +751,7 @@ async def main():
                                 target_holdings = snap_data.get(d_minus_2, {})
                                 current_holdings = await kiwoom_api.get_holdings_data(session) or {}
                                 
-                                msg = f"🚨 [미수/반대매매 방어 진단]\n"
+                                msg = f"🚨 [미수/반대매 방어 진단]\n"
                                 msg += f"• 당일 예수금: {deposit_str}\n\n"
                                 
                                 if not target_holdings:
@@ -1324,6 +1325,8 @@ async def main():
                      awaiting_setting, last_monitor_time, last_scan_time, last_asset_record_time, \
                      last_auto_chart_time, last_sync_time, last_cleared_hour, last_daily_reset_date, last_snapshot_date, \
                      monitor_latency
+                     
+            last_pending_check_time = 0 # 🚨 잔고 편입 확인용 타이머
             
             while True:
                 try:
@@ -1336,6 +1339,22 @@ async def main():
                     if is_active_day and is_monitor_time and auto_watch_list and (current_timestamp - last_monitor_time >= 1):
                         _mon_start_time = time.time()  # 🚨 모니터 실행 시간 측정 시작
                         state_changed = False
+                        
+                        # 🚨 [개선된 체결 감지 로직]: 대기주문이 있을 때만 3초마다 잔고를 조회하여 실제 편입 여부를 완벽히 판별
+                        has_pending = any(c['status'] == 'pending' for c in auto_watch_list.values())
+                        if has_pending and (current_timestamp - last_pending_check_time >= 3):
+                            holdings_check = await kiwoom_api.get_holdings_data(session)
+                            last_pending_check_time = current_timestamp
+                            
+                            if holdings_check is not None:
+                                for code, cond in list(auto_watch_list.items()):
+                                    if cond['status'] == 'pending' and code in holdings_check and holdings_check[code].get('qty', 0) > 0:
+                                        cond['status'] = 'active'
+                                        rt = kiwoom_api.realtime_prices.get(code)
+                                        cond['max_reached'] = rt if rt else cond['entry']
+                                        cond['min_reached'] = rt if rt else cond['entry']
+                                        state_changed = True
+                                        await send_tg_message(f"🟢 [{cond.get('name', code)}] 계좌 잔고 편입(매수 체결) 확실히 확인! 감시를 시작합니다.")
                         
                         for code, cond in list(auto_watch_list.items()):
                             rt_price = kiwoom_api.realtime_prices.get(code)
@@ -1355,7 +1374,6 @@ async def main():
                                     if cond.get('odno'):
                                         try:
                                             try:
-                                                # 🚨 증권사 API로 실제 취소 요청 전송 및 결과 확인 (수량 파라미터 추가)
                                                 cancel_res = await kiwoom_api.cancel_order(session, code, cond['odno'], cond.get('qty', 0))
                                             except TypeError:
                                                 cancel_res = await kiwoom_api.cancel_order(session, code, cond['odno'])
@@ -1368,14 +1386,6 @@ async def main():
                                     state_changed = True
                                     await send_tg_message(f"⏳ [{stock_name}] 미체결 대기시간({timeout_mins}분) 초과로 감시 종료.\n• 증권사 취소 요청 결과: {cancel_res}")
                                     continue
-
-                                # 🚨 상태가 pending일 때만 매수 체결 검사 수행
-                                if rt_price <= cond['entry']:
-                                    cond['status'] = 'active'
-                                    cond['max_reached'] = rt_price
-                                    cond['min_reached'] = rt_price 
-                                    state_changed = True
-                                    await send_tg_message(f"🟢 [{stock_name}] 매수 체결 확인! 감시 활성화.")
                             
                             if cond['status'] == 'active':
                                 if 'max_reached' not in cond: cond['max_reached'] = rt_price
