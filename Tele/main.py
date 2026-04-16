@@ -37,6 +37,7 @@ async def main():
     accumulated_targets = {}  # 🚨 FIFO 누적 추적용 딕셔너리
     
     max_profit_today = 0  # 🚨 당일 최고 수익금 추적용
+    last_scan_count = 0   # 🚨 최근 스캔 포착 종목 수 추적용
     last_monitor_time = 0
     last_scan_time = 0
     last_asset_record_time = 0
@@ -297,7 +298,7 @@ async def main():
                             c_res = await kiwoom_api.cancel_order(session, code, cond['odno'], cond.get('qty', 0))
                         except TypeError:
                             c_res = await kiwoom_api.cancel_order(session, code, cond['odno'])
-                            c_res = f"{c_res} (⚠️kiwoom_api.py에 qty 파라미터 추가 요망)"
+                            c_res = f"{c_res} (⚠️kiwoom_api.py 수정 필요)"
                         await send_tg_message(f"🛑 {cond.get('name', code)} 미체결 매수주문 일괄 취소: {c_res}")
                     except Exception:
                         pass
@@ -338,7 +339,7 @@ async def main():
             
             if keep_trading:
                 user_settings['is_paused'] = False
-                await send_tg_message("♻️ [수익 실현 완료] 매도 후 기준 자산이 성공적으로 갱신되었습니다. 시스템을 중지하지 않고 새로운 매매를 계속 진행합니다.")
+                await send_tg_message("♻️ [수익 실현 완료] 매도 후 기준 자산이 성공적으로 갱신되었습니다. 시스템을 중지하지 조고 새로운 매매를 계속 진행합니다.")
             else:
                 user_settings['is_paused'] = True
                 await send_tg_message("🛑 [시스템 셧다운 완료] 이익 보존/목표 달성으로 모든 가동이 중지되었습니다.")
@@ -357,7 +358,7 @@ async def main():
                      awaiting_setting, last_monitor_time, last_scan_time, last_asset_record_time, \
                      last_auto_chart_time, last_sync_time, last_cleared_hour, last_daily_reset_date, last_snapshot_date, \
                      last_macro_state, last_scanned_targets, daily_target_notified, accumulated_targets, max_profit_today, \
-                     scanner_latency, monitor_latency
+                     scanner_latency, monitor_latency, last_scan_count
             
             while True:
                 try:
@@ -535,8 +536,8 @@ async def main():
                         elif cmd == '감시':
                             watch_msg = "👀 [현재 감시 및 스캔 현황]\n\n"
                             watch_msg += f"⏱️ [시스템 지연(Latency) 측정기]\n"
-                            watch_msg += f"• 스캐너 루프: {scanner_latency:.2f}초 (총 {len(accumulated_targets)}종목 딥스캔)\n"
-                            watch_msg += f"• 모니터 루프: {monitor_latency:.2f}초 (총 {len(auto_watch_list)}종목 실시간)\n\n"
+                            watch_msg += f"• 스캐너 루프: {scanner_latency:.2f}초\n"
+                            watch_msg += f"• 모니터 루프: {monitor_latency:.2f}초 (실시간 보유 {len(auto_watch_list)}종목)\n\n"
                             
                             watch_msg += f"📊 시장 매크로 트렌드 (5MA-20MA)\n"
                             kpi_trend = last_macro_state.get('KOSPI', '대기중')
@@ -544,15 +545,17 @@ async def main():
                             watch_msg += f"• 코스피: {'📈 정배열' if kpi_trend == '정배열' else '📉 역배열' if kpi_trend == '역배열' else kpi_trend}\n"
                             watch_msg += f"• 코스닥: {'📈 정배열' if kdq_trend == '정배열' else '📉 역배열' if kdq_trend == '역배열' else kdq_trend}\n\n"
                             
-                            watch_msg += f"📡 최근 딥스캔 타겟 (Top 10)\n"
+                            watch_msg += f"📡 딥스캔 타겟 현황\n"
+                            watch_msg += f"• 최근 스캔 포착: {last_scan_count}종목\n"
+                            watch_msg += f"• 당일 누적 감시: {len(accumulated_targets)}종목\n"
                             if last_scanned_targets:
-                                watch_msg += f"• {', '.join(last_scanned_targets)}\n\n"
+                                watch_msg += f"• 랭킹 Top: {', '.join(last_scanned_targets)}\n\n"
                             else:
                                 watch_msg += "• 스캔 데이터 수집 중...\n\n"
 
                             watch_msg += "🎯 [현재 진입 대기 및 보유 종목]\n"
                             if not auto_watch_list: 
-                                watch_msg += "• 현재 감시 중인 종목이 없습니다."
+                                watch_msg += "• 현재 매매 중인 종목이 없습니다."
                             else:
                                 for code, cond in auto_watch_list.items():
                                     status_str = "🟢 활성" if cond['status'] == 'active' else "⏳ 대기"
@@ -941,7 +944,7 @@ async def main():
             nonlocal current_macro_pct, last_engine_scan_time, max_assets_today, max_assets_time, \
                      awaiting_setting, last_monitor_time, last_scan_time, last_asset_record_time, \
                      last_auto_chart_time, last_sync_time, last_cleared_hour, last_daily_reset_date, last_snapshot_date, \
-                     daily_target_notified, accumulated_targets, max_profit_today
+                     daily_target_notified, accumulated_targets, max_profit_today, last_scan_count
             
             while True:
                 try:
@@ -970,6 +973,7 @@ async def main():
                         max_assets_today = 0
                         max_assets_time = ""
                         max_profit_today = 0      # 🚨 당일 최고 수익 초기화
+                        last_scan_count = 0       # 🚨 일일 누적 시 최근 스캔 종목 수 초기화
                         
                         user_settings['is_paused'] = False 
                         await save_settings()
@@ -1110,7 +1114,7 @@ async def main():
             nonlocal current_macro_pct, last_engine_scan_time, max_assets_today, max_assets_time, \
                      awaiting_setting, last_monitor_time, last_scan_time, last_asset_record_time, \
                      last_auto_chart_time, last_sync_time, last_cleared_hour, last_daily_reset_date, last_snapshot_date, \
-                     last_macro_state, last_scanned_targets, accumulated_targets, scanner_latency
+                     last_macro_state, last_scanned_targets, accumulated_targets, scanner_latency, last_scan_count
             
             while True:
                 try:
@@ -1172,6 +1176,8 @@ async def main():
                             new_candidates = {}
                             if search_20: new_candidates.update(search_20)
                             if volume_20: new_candidates.update(volume_20)
+                            
+                            last_scan_count = len(new_candidates) # 🚨 최근 스캔 포착 종목 수 업데이트
                             
                             if user_settings.get('keep_tracking_today', True):
                                 for code, name in new_candidates.items():
@@ -1325,7 +1331,7 @@ async def main():
             nonlocal current_macro_pct, last_engine_scan_time, max_assets_today, max_assets_time, \
                      awaiting_setting, last_monitor_time, last_scan_time, last_asset_record_time, \
                      last_auto_chart_time, last_sync_time, last_cleared_hour, last_daily_reset_date, last_snapshot_date, \
-                     monitor_latency
+                     monitor_latency, last_scan_count
                      
             last_pending_check_time = 0 # 🚨 잔고 편입 확인용 타이머
             
@@ -1406,6 +1412,11 @@ async def main():
 
                                 if cond.get('half_sold'):
                                     new_sl_raw = int(cond['max_reached'] * 0.98)
+                                    
+                                    # 🚨 [Action 2] 스마트 방어: 반익절 후 수익 반납 방지를 위해 최소 +0.5% 구간에 강제 손절선(익절선) 배치
+                                    min_sl_raw = int(cond['entry'] * 1.005)
+                                    new_sl_raw = max(new_sl_raw, min_sl_raw)
+                                    
                                     tick = _get_tick_size(new_sl_raw)
                                     new_sl = (new_sl_raw // tick) * tick if tick > 1 else new_sl_raw
                                         

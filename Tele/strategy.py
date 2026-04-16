@@ -144,17 +144,17 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
     is_above_vwap = (n1['close'] >= vwap)
     is_long_trend = check_long_trend(candles, 60)
 
-    # 🚨 Level 2 이상일 때 VWAP 0% 이상 ~ 3.0% 미만 밴드 필터 적용 (원복)
+    # 🚨 Level 2 이상일 때 VWAP 0% 이상 ~ 1.5% 미만 밴드 필터 적용 (Action 3 타이트닝)
     if filter_lvl >= 2:
         if not is_above_vwap: return False, {}
-        if n1['close'] >= vwap * 1.03: return False, {}  # 🚨 1.5% -> 3.0% 원복 (분석용)
+        if n1['close'] >= vwap * 1.015: return False, {}  # 🚨 3.0% -> 1.5% 로 추격매수 차단 강화
 
     if filter_lvl >= 3 and not is_long_trend: return False, {}
     
     # 진단 메시지 구성
     fail_reasons = []
     if not is_above_vwap: fail_reasons.append("VWAP 하회(Lv.2 미달)")
-    elif n1['close'] >= vwap * 1.03: fail_reasons.append("VWAP 3% 이상 초과(추격매수 위험)")
+    elif n1['close'] >= vwap * 1.015: fail_reasons.append("VWAP 1.5% 이상 초과(추격매수 위험)")
     if trade_value < 100000000: fail_reasons.append("거래대금 1억 미만(유동성 부족)")
     if not is_long_trend: fail_reasons.append("60선 역배열(Lv.3 미달)")
 
@@ -221,17 +221,17 @@ def check_rvol_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filter_lvl=2):
     is_above_vwap = (n1['close'] >= vwap)
     is_long_trend = check_long_trend(candles, 60)
 
-    # 🚨 Level 2 이상일 때 VWAP 0% 이상 ~ 3.0% 미만 밴드 필터 적용 (원복)
+    # 🚨 Level 2 이상일 때 VWAP 0% 이상 ~ 1.5% 미만 밴드 필터 적용 (Action 3 타이트닝)
     if filter_lvl >= 2:
         if not is_above_vwap: return False, {}
-        if n1['close'] >= vwap * 1.03: return False, {}  # 🚨 1.5% -> 3.0% 원복 (분석용)
+        if n1['close'] >= vwap * 1.015: return False, {}  # 🚨 3.0% -> 1.5% 로 추격매수 차단 강화
 
     if filter_lvl >= 3 and not is_long_trend: return False, {}
     
     # 진단 메시지 구성
     fail_reasons = []
     if not is_above_vwap: fail_reasons.append("VWAP 하회(Lv.2 미달)")
-    elif n1['close'] >= vwap * 1.03: fail_reasons.append("VWAP 3% 이상 초과(추격매수 위험)")
+    elif n1['close'] >= vwap * 1.015: fail_reasons.append("VWAP 1.5% 이상 초과(추격매수 위험)")
     if trade_value < 100000000: fail_reasons.append("거래대금 1억 미만(유동성 부족)")
     if not is_long_trend: fail_reasons.append("60선 역배열(Lv.3 미달)")
 

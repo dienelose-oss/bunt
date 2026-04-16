@@ -230,19 +230,11 @@ async def buy_limit_order(session, stock_code, qty, price):
 async def cancel_order(session, stock_code, orgn_odno, qty=0):
     params = {
         'dmst_stex_tp': 'AUTO', 
+        'orig_ord_no': str(orgn_odno),
         'stk_cd': stock_code, 
-        'ord_qty': str(qty) if qty > 0 else '0', 
-        'mdfy_qty': str(qty) if qty > 0 else '0', 
-        'mdfy_uv': '0', 
-        'ord_uv': '0', 
-        'trde_tp': '00', 
-        'ord_tp': '1', # 🚨 핵심 수정: 기존 '3'에서 원주문(지정가)과 동일한 '1'로 수정
-        'RVSE_CNCL_DVSN_CD': '02', 
-        'cond_uv': '0',
-        'orgn_odno': str(orgn_odno),     
-        'orig_ord_no': str(orgn_odno)    
+        'cncl_qty': str(qty) if qty > 0 else '0' # '0' 입력 시 전량 취소
     }
-    res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10002', params)
+    res, _ = await _request_api(session, '/api/dostk/ordr', 'kt10003', params)
     
     if not res:
         return f"❌ 취소 실패: API 통신 오류 (응답 없음)"
@@ -250,7 +242,6 @@ async def cancel_order(session, stock_code, orgn_odno, qty=0):
     if str(res.get('return_code', res.get('rt_cd', '1'))) == '0':
         return f"✅ [{stock_code}] 미체결 취소 완료"
         
-    # 🚨 핵심 수정: 에러 로깅 강화. 단순히 2000만 띄우지 않고 전체 JSON 원본을 출력
     error_code = res.get('return_code', res.get('rt_cd', '오류'))
     error_msg = res.get('return_msg', res.get('msg1', '사유없음'))
     return f"❌ 취소 실패 [{error_code}]: {error_msg} | 원본데이터: {str(res)}"
@@ -295,26 +286,51 @@ async def sell_limit_order(session, stock_code, qty, price):
         
     return f"❌ 2차 매도 실패: 에러코드 {res.get('return_code', '오류')} / 사유: {res.get('return_msg', '응답없음')}"
 
+# 🚨 검색 순위 데이터 수집 시 빈 배열일 경우 콘솔에 로깅 추가
 async def get_top_20_search_rank(session):
     res, _ = await _request_api(session, '/api/dostk/stkinfo', 'ka00198', {'qry_tp': '1'})
     if not res: 
+        print("❌ [API] 실시간 검색 순위 통신 실패")
         return {}
         
+    rank_data = res.get('item_inq_rank', [])
+    if not rank_data:
+        print(f"⚠️ [API 경고] 실시간 검색 순위 응답 없음: {str(res)[:250]}")
+        
     result = {}
-    for stk in res.get('item_inq_rank', [])[:20]:
+    for stk in rank_data[:20]:
         code = stk.get('stk_cd', '')
         if code:
             result[code] = stk.get('stk_nm', '')
             
     return result
 
+# 🚨 ka10030 (당일거래량상위요청) API 규격으로 완벽 교체
 async def get_top_20_volume_rank(session):
-    res, _ = await _request_api(session, '/api/dostk/stkinfo', 'ka00216', {'qry_tp': '1', 'dmst_stex_tp': 'AUTO'})
+    params = {
+        'mrkt_tp': '000',          # 시장구분: 전체
+        'sort_tp': '1',            # 정렬구분: 거래량
+        'mang_stk_incls': '0',     # 관리종목포함: 제외
+        'crd_tp': '0',             # 신용구분: 전체
+        'trde_qty_tp': '0',        # 거래량구분: 전체
+        'pric_tp': '0',            # 가격구분: 전체
+        'trde_prica_tp': '0',      # 거래대금구분: 전체
+        'mrkt_open_tp': '0',       # 장운영구분: 전체
+        'stex_tp': '1'             # 거래소구분: KRX (1)
+    }
+    
+    res, _ = await _request_api(session, '/api/dostk/rkinfo', 'ka10030', params)
     if not res: 
+        print("❌ [API] 거래량 순위 통신 실패")
         return {}
         
+    # 새로운 API의 응답 리스트 키는 'tdy_trde_qty_upper'
+    rank_data = res.get('tdy_trde_qty_upper', [])
+    if not rank_data:
+        print(f"⚠️ [API 경고] 거래량 순위 응답 데이터 비어있음: {str(res)[:250]}")
+        
     result = {}
-    for stk in res.get('trde_qty_rank', [])[:20]:
+    for stk in rank_data[:20]:
         code = stk.get('stk_cd', '')
         if code:
             result[code] = stk.get('stk_nm', '').strip()

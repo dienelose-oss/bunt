@@ -33,23 +33,23 @@
         "sl": 98000,
         "tp": 102700,
         "status": "pending",
-        "odno": "0951124",
-        "is_rvol": true,
-        "is_gemini": false,
+        "odno": "0953424",
+        "is_rvol": false,
+        "is_gemini": true,
         "is_laptop": false,
         "meta": {
-            "vol_burst_ratio": 7.5,
+            "vol_burst_ratio": 5.44,
             "req_vol_ratio": 5.0,
             "entry_atr": 721.43,
             "vwap_gap": 2.93,
             "upper_tail_ratio": 0,
-            "strategy": "RVOL",
+            "strategy": "GEMINI",
             "diag_msg": "\ubaa8\ub4e0 \uc870\uac74 \ucda9\uc871(Lv.3\uae09 \uc644\ubcbd)",
             "macro_pct": 0.91,
             "macro_trend": "\uc815\ubc30\uc5f4",
             "macro_gap": 0.0
         },
-        "entry_time": 1776321737.7506554,
+        "entry_time": 1776321950.0795228,
         "original_entry": 101100
     }
 }
