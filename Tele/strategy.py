@@ -120,27 +120,34 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
     if not candles or len(candles) < 60: return False, {}
     n1 = candles[1]
     
-    # [Lv.1 공통 조건] 양봉 및 거래량 2배 폭발 확인
+    # [Lv.1 공통 조건] 양봉 및 세션별 거래량 폭발 기준 차등 적용
     if n1['close'] <= n1['open']: return False, {}
         
     recent_vols = [c['volume'] for c in candles[2:16]]
     avg_vol = sum(recent_vols) / len(recent_vols) if recent_vols else 1
     vol_burst_ratio = n1['volume'] / avg_vol
 
-    if vol_burst_ratio < 2.0: return False, {}
+    # 🚨 [신규] 09:30 이후 Mid 세션은 가짜 돌파가 많으므로 기준을 5배로 상향
+    hhmm = n1['time'][8:12]
+    req_vol_ratio = 5.0 if hhmm >= '0930' else 2.0
+    if vol_burst_ratio < req_vol_ratio: return False, {}
     
     # 🚨 VolBurst 킬 스위치 (거래량 12배 이상 폭발 시 작전/설거지 의심으로 진입 전면 차단)
     if vol_burst_ratio > 12.0: return False, {}
+
+    # 🚨 [신규] 1분봉 절대 거래대금 1억 원 이상 필터 (소외주 휩쏘 방지)
+    trade_value = n1['close'] * n1['volume']
+    if trade_value < 100000000: return False, {}
 
     # 🚨 상위 필터 조건 무조건 사전 계산
     vwap = calculate_vwap(candles, today_str)
     is_above_vwap = (n1['close'] >= vwap)
     is_long_trend = check_long_trend(candles, 60)
 
-    # 🚨 Level 2 이상일 때 VWAP 0% 이상 ~ 3% 미만 밴드 필터 적용
+    # 🚨 Level 2 이상일 때 VWAP 0% 이상 ~ 3.0% 미만 밴드 필터 적용 (원복)
     if filter_lvl >= 2:
         if not is_above_vwap: return False, {}
-        if n1['close'] >= vwap * 1.03: return False, {}  # 3% 이상 추격매수 차단
+        if n1['close'] >= vwap * 1.03: return False, {}  # 🚨 1.5% -> 3.0% 원복 (분석용)
 
     if filter_lvl >= 3 and not is_long_trend: return False, {}
     
@@ -148,6 +155,7 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
     fail_reasons = []
     if not is_above_vwap: fail_reasons.append("VWAP 하회(Lv.2 미달)")
     elif n1['close'] >= vwap * 1.03: fail_reasons.append("VWAP 3% 이상 초과(추격매수 위험)")
+    if trade_value < 100000000: fail_reasons.append("거래대금 1억 미만(유동성 부족)")
     if not is_long_trend: fail_reasons.append("60선 역배열(Lv.3 미달)")
 
     diag_msg = " + ".join(fail_reasons) if fail_reasons else "모든 조건 충족(Lv.3급 완벽)"
@@ -172,6 +180,7 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
         'strategy': 'GEMINI',
         'meta': {
             'vol_burst_ratio': round(vol_burst_ratio, 2),
+            'req_vol_ratio': req_vol_ratio, # 🚨 [신규] 나중에 세션별 통계 분석을 위해 요구 거래량 기준치 추가
             'entry_atr': round(atr, 2),
             'vwap_gap': round(vwap_gap, 2),
             'upper_tail_ratio': 0,
@@ -190,26 +199,32 @@ def check_rvol_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filter_lvl=2):
     # [Lv.1 공통 조건] 양봉 확인
     if n1['close'] <= n1['open']: return False, {}
         
-    # 최근 1시간(20개 캔들) 평균 거래량 대비 3배 폭발 (RVOL >= 3.0)
-    # n1이 candles[1]이므로, 그 이전 과거 20개는 candles[2:22]
+    # 최근 1시간(20개 캔들) 평균 거래량 대비 세션별 차등 폭발 기준 적용
     past_20_vols = [c['volume'] for c in candles[2:22]]
     avg_vol_20 = sum(past_20_vols) / len(past_20_vols) if past_20_vols else 1
     rvol = n1['volume'] / avg_vol_20
 
-    if rvol < 3.0: return False, {}
+    # 🚨 [신규] 09:30 이후 Mid 세션은 가짜 돌파가 많으므로 RVOL 5배 이상으로 타이트닝
+    hhmm = n1['time'][8:12]
+    req_rvol = 5.0 if hhmm >= '0930' else 3.0
+    if rvol < req_rvol: return False, {}
     
     # 거래량 12배 이상 폭발 시 작전/설거지 의심으로 진입 전면 차단
     if rvol > 12.0: return False, {}
+
+    # 🚨 [신규] 1분봉 절대 거래대금 1억 원 이상 필터 (소외주 휩쏘 방지)
+    trade_value = n1['close'] * n1['volume']
+    if trade_value < 100000000: return False, {}
 
     # 🚨 상위 필터 조건 무조건 사전 계산
     vwap = calculate_vwap(candles, today_str)
     is_above_vwap = (n1['close'] >= vwap)
     is_long_trend = check_long_trend(candles, 60)
 
-    # 🚨 Level 2 이상일 때 VWAP 0% 이상 ~ 3% 미만 밴드 필터 적용
+    # 🚨 Level 2 이상일 때 VWAP 0% 이상 ~ 3.0% 미만 밴드 필터 적용 (원복)
     if filter_lvl >= 2:
         if not is_above_vwap: return False, {}
-        if n1['close'] >= vwap * 1.03: return False, {}  # 3% 이상 추격매수 차단
+        if n1['close'] >= vwap * 1.03: return False, {}  # 🚨 1.5% -> 3.0% 원복 (분석용)
 
     if filter_lvl >= 3 and not is_long_trend: return False, {}
     
@@ -217,6 +232,7 @@ def check_rvol_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filter_lvl=2):
     fail_reasons = []
     if not is_above_vwap: fail_reasons.append("VWAP 하회(Lv.2 미달)")
     elif n1['close'] >= vwap * 1.03: fail_reasons.append("VWAP 3% 이상 초과(추격매수 위험)")
+    if trade_value < 100000000: fail_reasons.append("거래대금 1억 미만(유동성 부족)")
     if not is_long_trend: fail_reasons.append("60선 역배열(Lv.3 미달)")
 
     diag_msg = " + ".join(fail_reasons) if fail_reasons else "모든 조건 충족(Lv.3급 완벽)"
@@ -240,6 +256,7 @@ def check_rvol_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filter_lvl=2):
         'strategy': 'RVOL',
         'meta': {
             'vol_burst_ratio': round(rvol, 2),
+            'req_vol_ratio': req_rvol, # 🚨 [신규] 나중에 세션별 통계 분석을 위해 요구 거래량 기준치 추가
             'entry_atr': round(atr, 2),
             'vwap_gap': round(vwap_gap, 2),
             'upper_tail_ratio': 0,

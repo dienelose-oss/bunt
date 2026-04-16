@@ -227,15 +227,16 @@ async def buy_limit_order(session, stock_code, qty, price):
         
     return f"❌ 매수 실패: {res.get('return_msg', res.get('msg1', '응답없음'))}", None
 
-# 🚨 주문 취소 시 수량(qty) 파라미터를 추가로 받을 수 있게 수정했습니다. (기본값 0)
 async def cancel_order(session, stock_code, orgn_odno, qty=0):
     params = {
         'dmst_stex_tp': 'AUTO', 
         'stk_cd': stock_code, 
-        'ord_qty': str(qty) if qty > 0 else '0', # 수정: 매수 주문 걸었던 수량만큼 전달
+        'ord_qty': str(qty) if qty > 0 else '0', 
+        'mdfy_qty': str(qty) if qty > 0 else '0', 
+        'mdfy_uv': '0', 
         'ord_uv': '0', 
         'trde_tp': '00', 
-        'ord_tp': '3',
+        'ord_tp': '1', # 🚨 핵심 수정: 기존 '3'에서 원주문(지정가)과 동일한 '1'로 수정
         'RVSE_CNCL_DVSN_CD': '02', 
         'cond_uv': '0',
         'orgn_odno': str(orgn_odno),     
@@ -248,7 +249,11 @@ async def cancel_order(session, stock_code, orgn_odno, qty=0):
         
     if str(res.get('return_code', res.get('rt_cd', '1'))) == '0':
         return f"✅ [{stock_code}] 미체결 취소 완료"
-    return f"❌ 취소 실패: {res.get('return_msg', res.get('msg1', '오류'))}"
+        
+    # 🚨 핵심 수정: 에러 로깅 강화. 단순히 2000만 띄우지 않고 전체 JSON 원본을 출력
+    error_code = res.get('return_code', res.get('rt_cd', '오류'))
+    error_msg = res.get('return_msg', res.get('msg1', '사유없음'))
+    return f"❌ 취소 실패 [{error_code}]: {error_msg} | 원본데이터: {str(res)}"
 
 async def sell_market_order(session, stock_code, qty):
     params = {

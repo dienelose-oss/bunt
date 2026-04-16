@@ -1,54 +1,55 @@
 {
-    "005880": {
-        "name": "\ub300\ud55c\ud574\uc6b4",
+    "005930": {
+        "name": "\uc0bc\uc131\uc804\uc790",
         "market": "KOSPI",
-        "qty": 1250,
-        "entry": 2710,
-        "sl": 2655,
-        "tp": 2775,
+        "qty": 25,
+        "entry": 218500,
+        "sl": 215000,
+        "tp": 221000,
         "status": "active",
-        "odno": "0697863",
+        "odno": "0613718",
         "is_rvol": false,
         "is_gemini": false,
         "is_laptop": true,
         "meta": {
-            "pullback_vol_ratio": 0.17,
-            "entry_atr": 19.64,
-            "vwap_gap": 1.11,
+            "pullback_vol_ratio": 0.29,
+            "entry_atr": 892.86,
+            "vwap_gap": 1.1,
             "strategy": "LAPTOP",
-            "macro_pct": 2.49,
+            "macro_pct": 1.18,
             "macro_trend": "\uc815\ubc30\uc5f4",
             "macro_gap": 0.0
         },
-        "entry_time": 1776224141.550341,
-        "original_entry": 2695,
-        "max_reached": 2700,
-        "min_reached": 2670
+        "entry_time": 1776307216.9778214,
+        "original_entry": 217000,
+        "max_reached": 218500,
+        "min_reached": 215250
     },
-    "005930": {
-        "name": "\uc0bc\uc131\uc804\uc790",
+    "456040": {
+        "name": "OCI",
         "market": "KOSPI",
-        "qty": 9,
-        "entry": 212000,
-        "sl": 210000,
-        "tp": 216000,
+        "qty": 10,
+        "entry": 100000,
+        "sl": 98000,
+        "tp": 102700,
         "status": "pending",
-        "odno": "0750496",
+        "odno": "0951124",
         "is_rvol": true,
         "is_gemini": false,
         "is_laptop": false,
         "meta": {
-            "vol_burst_ratio": 6.36,
-            "entry_atr": 446.43,
-            "vwap_gap": 0.1,
+            "vol_burst_ratio": 7.5,
+            "req_vol_ratio": 5.0,
+            "entry_atr": 721.43,
+            "vwap_gap": 2.93,
             "upper_tail_ratio": 0,
             "strategy": "RVOL",
             "diag_msg": "\ubaa8\ub4e0 \uc870\uac74 \ucda9\uc871(Lv.3\uae09 \uc644\ubcbd)",
-            "macro_pct": 2.88,
+            "macro_pct": 0.91,
             "macro_trend": "\uc815\ubc30\uc5f4",
             "macro_gap": 0.0
         },
-        "entry_time": 1776226686.6764073,
-        "original_entry": 214500
+        "entry_time": 1776321737.7506554,
+        "original_entry": 101100
     }
 }

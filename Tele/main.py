@@ -954,11 +954,12 @@ async def main():
 
                     # 매일 아침 초기화
                     if now.hour == 7 and now.minute == 55 and last_daily_reset_date != today_str:
-                        if len(asset_history) >= 2:
-                            prev_date_str = asset_history[-1][0].strftime('%Y%m%d')
-                            archive_path = f"asset_chart_{prev_date_str}.png"
-                            if os.path.exists('asset_chart.png'):
-                                await asyncio.to_thread(shutil.copy, 'asset_chart.png', archive_path)
+                        # 🚨 [버그 수정] 재시작으로 인해 asset_history가 초기화되어도 무조건 전일자 차트 백업
+                        yesterday = now - timedelta(days=1)
+                        prev_date_str = yesterday.strftime('%Y%m%d')
+                        archive_path = f"asset_chart_{prev_date_str}.png"
+                        if os.path.exists('asset_chart.png'):
+                            await asyncio.to_thread(shutil.copy, 'asset_chart.png', archive_path)
                                 
                         current_assets = await kiwoom_api.get_estimated_assets(session)
                         if current_assets is not None:
@@ -1148,7 +1149,7 @@ async def main():
                             
                             macro_state = {'KOSPI': {'trend': '정배열', 'gap': 0.0, '5ma': 0, '20ma': 0}, 
                                            'KOSDAQ': {'trend': '정배열', 'gap': 0.0, '5ma': 0, '20ma': 0}}
-                                           
+                                            
                             def _calc_ma(candles):
                                 if len(candles) < 20: return 0, 0, '정배열', 0.0
                                 closes = [c['close'] for c in candles[:20]]

@@ -8,7 +8,7 @@
     "gemini_tp_pct": 1.5,
     "gemini_sl_pct": 1.0,
     "nxt_scan_enabled": false,
-    "keep_tracking_today": true,
+    "keep_tracking_today": false,
     "max_tracking_items": 30,
     "gemini_api_key": ""
 }
