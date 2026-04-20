@@ -1327,7 +1327,7 @@ async def main():
                 await asyncio.sleep(1)
 
         # 4. 실시간 웹소켓 가격 감시 태스크 (블로킹 우회)
-        async def task_monitor():
+        async def   task_monitor():
             nonlocal current_macro_pct, last_engine_scan_time, max_assets_today, max_assets_time, \
                      awaiting_setting, last_monitor_time, last_scan_time, last_asset_record_time, \
                      last_auto_chart_time, last_sync_time, last_cleared_hour, last_daily_reset_date, last_snapshot_date, \

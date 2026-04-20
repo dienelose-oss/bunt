@@ -1,5 +1,5 @@
 {
-    "base_amount": 19350297,
+    "base_amount": 19374885,
     "risk_amount": 50000,
     "auto_rr_ratio": 2.0,
     "gemini_amount": 1000000,
@@ -17,8 +17,8 @@
     "max_tracking_items": 100,
     "profit_preserve_on": false,
     "profit_preserve_amount": 2000000,
-    "profit_trailing_on": false,
-    "profit_trailing_pct": 20.0,
+    "profit_trailing_on": true,
+    "profit_trailing_pct": 10.0,
     "protected_codes": [],
     "custom_watchlist": {
         "024060": "\ud765\uad6c\uc11d\uc720",

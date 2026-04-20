@@ -317,3 +317,127 @@ def _generate_and_send_asset_chart(asset_history, base_amount, max_assets_today,
         caption += f"\n👑 최고 자산: {max_assets_today:,}원 ({f'+{max_diff:,}' if max_diff>0 else f'{max_diff:,}'}원) - {max_assets_time} 기준"
     telegram_bot.send_photo(chart_path, caption=caption)
     return True
+
+# ---------------------------------------------------------
+# 5. 핵심 자동매매 감시 및 제어 루프 (신규 작성)
+# ---------------------------------------------------------
+async def main_loop():
+    print("🚀 수석 엔지니어 버전 자동매매 시스템을 구동합니다...")
+    
+    # Redis 클라이언트 초기화 (실패 시 로컬 json 파일 사용)
+    redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+    
+    async with aiohttp.ClientSession() as session:
+        # 1. 설정 및 상태 로드
+        settings = await load_or_init_settings(session)
+        watch_list, alerted_obs, use_redis = await load_persistent_state(redis_client)
+        
+        # 텔레그램 봇 초기 알림
+        await send_tg_message(f"✅ Bunt 봇 구동 시작.\n설정 베이스 자산: {settings['base_amount']:,}원")
+
+        # 2. 웹소켓(틱 시세) 스트리밍 연결
+        ws_manager = kiwoom_api.KISWebSocket(session)
+        await ws_manager.connect()
+
+        # 무한 루프 시작
+        while True:
+            try:
+                now = datetime.now(KST)
+                current_time_int = now.hour * 100 + now.minute
+                today_str = now.strftime('%Y%m%d')
+
+                # 장중 감시 시간 (09:00 ~ 15:20)
+                is_market_open = (900 <= current_time_int < 1520)
+
+                # =========================================================
+                # 🌟 [글로벌 추세 필터] 코스피/코스닥 1분봉 5선 > 20선 정배열 확인
+                # =========================================================
+                if strategy.global_market_filter.needs_update(interval_seconds=60):
+                    # API 한도 방지를 위해 1분에 1번만 지수 데이터를 호출합니다.
+                    kospi_data = await kiwoom_api.get_index_minute_data(session, '0001')
+                    kosdaq_data = await kiwoom_api.get_index_minute_data(session, '1001')
+                    
+                    is_trend_good = strategy.global_market_filter.update_trend(kospi_data, kosdaq_data)
+                    
+                    # 콘솔 로깅 (텔레그램 알림은 너무 잦으므로 생략 또는 옵션화 권장)
+                    trend_status = "🟢 정배열 (안전)" if is_trend_good else "🔴 역배열 (매수 차단)"
+                    print(f"📊 [시장 추세 {now.strftime('%H:%M:%S')}] 코스피/코스닥 상태: {trend_status}")
+
+                if is_market_open:
+                    # 현재 보유 종목 로드
+                    holdings = await kiwoom_api.get_holdings_data(session) or {}
+                    
+                    # 글로벌 필터 판별 상태 (True/False)
+                    can_buy_market = strategy.global_market_filter.is_safe_to_buy()
+                    
+                    # =========================================================
+                    # 🔍 [매수 감시 로직] 감시 리스트(watch_list) 순회
+                    # =========================================================
+                    for code, info in list(watch_list.items()):
+                        # 1) 이미 보유 중인 종목은 신규 매수 감시 패스
+                        if code in holdings:
+                            continue
+                            
+                        # 2) 시장 역배열 상태 방어막 (Circuit Breaker)
+                        if not can_buy_market:
+                            # 추세가 안 좋을 때는 매수 타점이 오더라도 진입을 포기합니다.
+                            continue
+
+                        # 3) 분봉 캔들 조회
+                        candles = await kiwoom_api.get_candles(session, code, 1)
+                        if not candles:
+                            continue
+
+                        # 4) 전략 타점 검사 (Gemini 엔진 예시)
+                        if settings.get('engine_gem_on', True):
+                            is_signal, meta = strategy.check_gemini_momentum_model(
+                                candles, 
+                                today_str, 
+                                tp_pct=settings['gemini_tp_pct'], 
+                                sl_pct=settings['gemini_sl_pct'], 
+                                filter_lvl=settings['gemini_filter_lvl']
+                            )
+                            
+                            if is_signal:
+                                entry_price = meta['entry_price']
+                                # 리스크 베이스 비중 계산
+                                calc_qty = int(settings['gemini_amount'] // entry_price) if entry_price > 0 else 0
+                                
+                                if calc_qty > 0:
+                                    # 실제 주문 API 호출
+                                    msg, odno = await kiwoom_api.buy_limit_order(session, code, calc_qty, entry_price)
+                                    
+                                    # 결과 브리핑
+                                    report_msg = (
+                                        f"🚨 [자동 매수 시그널 발생]\n"
+                                        f"• 종목코드: {code}\n"
+                                        f"• 결과: {msg}\n"
+                                        f"• 적용엔진: {meta['strategy']}\n"
+                                        f"• 진단: {meta['meta']['diag_msg']}"
+                                    )
+                                    await send_tg_message(report_msg)
+                                    
+                                    # 매수 후 감시 리스트에서 해당 종목 삭제
+                                    del watch_list[code]
+                                    await save_watch_list(redis_client, watch_list, use_redis)
+
+                    # =========================================================
+                    # 💰 [매도 및 청산 로직] 잔고 스캔 (추후 고도화 필요 영역)
+                    # =========================================================
+                    # 보유 종목에 대한 TP(익절), SL(손절) 로직이 이곳에 추가되어야 합니다.
+                    # 현재는 구조만 잡아두었습니다.
+                    pass
+
+                # API 호출 한도(Rate Limit) 방지용 대기
+                await asyncio.sleep(1.0)
+
+            except Exception as e:
+                print(f"❌ [메인 루프 에러]: {e}")
+                await asyncio.sleep(5) # 에러 발생 시 잠시 휴식
+
+if __name__ == "__main__":
+    try:
+        # 최상위 비동기 이벤트 루프 실행
+        asyncio.run(main_loop())
+    except KeyboardInterrupt:
+        print("\n🛑 사용자에 의해 자동매매 시스템이 안전하게 종료되었습니다.")

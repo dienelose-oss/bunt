@@ -1,3 +1,4 @@
+import time
 import math
 from collections import deque
 from datetime import datetime
@@ -112,6 +113,53 @@ def get_ema(closes_old_to_new, period):
     for price in closes_old_to_new[period:]:
         ema = (price * k) + (ema * (1 - k))
     return ema
+
+# -----------------------------------------------------------------------------
+# 1-1. 글로벌 시장 추세(Macro Trend) 매수 필터 모듈 (신규 추가)
+# -----------------------------------------------------------------------------
+class GlobalMarketFilter:
+    def __init__(self):
+        self.cached_trend = True
+        self.last_check_time = 0
+
+    def update_trend(self, kospi_candles, kosdaq_candles):
+        """1분봉 지수 캔들을 받아 시장의 단기 정배열 상태를 판별합니다."""
+        # 데이터가 부족할 경우 락(Lock)을 걸지 않기 위해 기존 상태를 유지합니다.
+        if not kospi_candles or not kosdaq_candles or len(kospi_candles) < 20 or len(kosdaq_candles) < 20:
+            return self.cached_trend
+
+        # 키움/KIS API는 보통 인덱스 0이 가장 최신 봉입니다. (최근 20개 추출)
+        k_closes = [c['close'] for c in kospi_candles[:20]]
+        d_closes = [c['close'] for c in kosdaq_candles[:20]]
+
+        # 코스피 5선, 20선 계산
+        kospi_ma5 = sum(k_closes[:5]) / 5
+        kospi_ma20 = sum(k_closes[:20]) / 20
+
+        # 코스닥 5선, 20선 계산
+        kosdaq_ma5 = sum(d_closes[:5]) / 5
+        kosdaq_ma20 = sum(d_closes[:20]) / 20
+
+        # 정배열 (5선 > 20선) 논리 조건
+        is_kospi_good = kospi_ma5 > kospi_ma20
+        is_kosdaq_good = kosdaq_ma5 > kosdaq_ma20
+
+        # 양대 시장 모두 정배열일 때만 True 반환 (필요 시 OR로 변경 가능)
+        self.cached_trend = is_kospi_good and is_kosdaq_good
+        self.last_check_time = time.time()
+        
+        return self.cached_trend
+
+    def is_safe_to_buy(self):
+        """캐싱된 현재 시장의 정배열 안전 상태를 반환합니다."""
+        return self.cached_trend
+
+    def needs_update(self, interval_seconds=60):
+        """API Rate Limit 초과 방지용 (60초 이상 지났을 때만 API를 호출하도록 설계)"""
+        return (time.time() - self.last_check_time) >= interval_seconds
+
+# 전역 싱글톤 필터 인스턴스 (main_sub.py 에서 import 하여 사용)
+global_market_filter = GlobalMarketFilter()
 
 # -----------------------------------------------------------------------------
 # 2-1. 제미나이 모멘텀 스캘핑 엔진 (자동 매매 - 진단 보고 기능 탑재)

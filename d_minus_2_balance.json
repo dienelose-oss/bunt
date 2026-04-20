@@ -1,133 +1,4 @@
 {
-    "20260403": {
-        "0007J0": {
-            "name": "\uc778\ubca4\ud14c\ub77c",
-            "prpr": 32973,
-            "qty": 57
-        },
-        "003280": {
-            "name": "\ud765\uc544\ud574\uc6b4",
-            "prpr": 4080,
-            "qty": 168
-        },
-        "005880": {
-            "name": "\ub300\ud55c\ud574\uc6b4",
-            "prpr": 2394,
-            "qty": 795
-        },
-        "005930": {
-            "name": "\uc0bc\uc131\uc804\uc790",
-            "prpr": 186270,
-            "qty": 10
-        },
-        "012450": {
-            "name": "\ud55c\ud654\uc5d0\uc5b4\ub85c\uc2a4\ud398\uc774\uc2a4",
-            "prpr": 1442678,
-            "qty": 1
-        },
-        "032820": {
-            "name": "\uc6b0\ub9ac\uae30\uc220",
-            "prpr": 21300,
-            "qty": 87
-        },
-        "050890": {
-            "name": "\uc3e0\ub9ac\ub4dc",
-            "prpr": 16262,
-            "qty": 119
-        },
-        "100090": {
-            "name": "SK\uc624\uc158\ud50c\ub79c\ud2b8",
-            "prpr": 30080,
-            "qty": 66
-        },
-        "100790": {
-            "name": "\ubbf8\ub798\uc5d0\uc14b\ubca4\ucc98\ud22c\uc790",
-            "prpr": 27436,
-            "qty": 192
-        },
-        "114190": {
-            "name": "\uac15\uc6d0\uc5d0\ub108\uc9c0",
-            "prpr": 13907,
-            "qty": 130
-        },
-        "126600": {
-            "name": "BGF\uc5d0\ucf54\uba38\ud2f0\ub9ac\uc5bc\uc988",
-            "prpr": 4419,
-            "qty": 389
-        },
-        "131370": {
-            "name": "\uc54c\uc11c\ud3ec\ud2b8",
-            "prpr": 2653,
-            "qty": 680
-        },
-        "137950": {
-            "name": "\uc81c\uc774\uc528\ucf00\ubbf8\uce7c",
-            "prpr": 5587,
-            "qty": 328
-        },
-        "161000": {
-            "name": "\uc560\uacbd\ucf00\ubbf8\uce7c",
-            "prpr": 14017,
-            "qty": 140
-        },
-        "319400": {
-            "name": "\ud604\ub300\ubb34\ubca1\uc2a4",
-            "prpr": 27237,
-            "qty": 67
-        },
-        "389260": {
-            "name": "\ub300\uba85\uc5d0\ub108\uc9c0",
-            "prpr": 27237,
-            "qty": 73
-        },
-        "000660": {
-            "name": "*SK\ud558\uc774\ub2c9\uc2a4",
-            "prpr": 878950,
-            "qty": 22
-        }
-    },
-    "20260406": {
-        "003280": {
-            "name": "\ud765\uc544\ud574\uc6b4",
-            "prpr": 3801,
-            "qty": 168
-        },
-        "012450": {
-            "name": "\ud55c\ud654\uc5d0\uc5b4\ub85c\uc2a4\ud398\uc774\uc2a4",
-            "prpr": 1445673,
-            "qty": 1
-        },
-        "100790": {
-            "name": "\ubbf8\ub798\uc5d0\uc14b\ubca4\ucc98\ud22c\uc790",
-            "prpr": 27586,
-            "qty": 192
-        },
-        "126600": {
-            "name": "BGF\uc5d0\ucf54\uba38\ud2f0\ub9ac\uc5bc\uc988",
-            "prpr": 4180,
-            "qty": 389
-        },
-        "137950": {
-            "name": "\uc81c\uc774\uc528\ucf00\ubbf8\uce7c",
-            "prpr": 5577,
-            "qty": 328
-        },
-        "161000": {
-            "name": "\uc560\uacbd\ucf00\ubbf8\uce7c",
-            "prpr": 12271,
-            "qty": 140
-        },
-        "389260": {
-            "name": "\ub300\uba85\uc5d0\ub108\uc9c0",
-            "prpr": 24792,
-            "qty": 73
-        },
-        "000660": {
-            "name": "*SK\ud558\uc774\ub2c9\uc2a4",
-            "prpr": 881943,
-            "qty": 22
-        }
-    },
     "20260407": {
         "003280": {
             "name": "\ud765\uc544\ud574\uc6b4",
@@ -532,6 +403,75 @@
             "name": "\uc5d0\ucf54\ud504\ub85c\uba38\ud2f0",
             "prpr": 71435,
             "qty": 26
+        }
+    },
+    "20260417": {
+        "000660": {
+            "name": "SK\ud558\uc774\ub2c9\uc2a4",
+            "prpr": 1131391,
+            "qty": 16
+        },
+        "003280": {
+            "name": "\ud765\uc544\ud574\uc6b4",
+            "prpr": 3062,
+            "qty": 84
+        },
+        "005380": {
+            "name": "\ud604\ub300\ucc28",
+            "prpr": 535767,
+            "qty": 58
+        },
+        "006360": {
+            "name": "GS\uac74\uc124",
+            "prpr": 39009,
+            "qty": 678
+        },
+        "089030": {
+            "name": "\ud14c\ud06c\uc719",
+            "prpr": 56370,
+            "qty": 34
+        },
+        "319400": {
+            "name": "\ud604\ub300\ubb34\ubca1\uc2a4",
+            "prpr": 32325,
+            "qty": 30
+        },
+        "450080": {
+            "name": "\uc5d0\ucf54\ud504\ub85c\uba38\ud2f0",
+            "prpr": 73530,
+            "qty": 26
+        },
+        "158430": {
+            "name": "*\uc544\ud1a4",
+            "prpr": 8699,
+            "qty": 449
+        }
+    },
+    "20260420": {
+        "003280": {
+            "name": "\ud765\uc544\ud574\uc6b4",
+            "prpr": 3307,
+            "qty": 6541
+        },
+        "005380": {
+            "name": "\ud604\ub300\ucc28",
+            "prpr": 528782,
+            "qty": 58
+        },
+        "006360": {
+            "name": "GS\uac74\uc124",
+            "prpr": 38111,
+            "qty": 678
+        },
+        "089030": {
+            "name": "\ud14c\ud06c\uc719",
+            "prpr": 55272,
+            "qty": 34
+        },
+        "319400": {
+            "name": "\ud604\ub300\ubb34\ubca1\uc2a4",
+            "prpr": 30929,
+            "qty": 30
         }
     }
 }

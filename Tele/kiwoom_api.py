@@ -380,3 +380,30 @@ async def get_orderbook(session, stock_code):
     bid_price = int(str(res.get('buy_ho_prc1', '0')).strip() or '0')
     
     return ask_vol, bid_vol, ask_price, bid_price
+
+# 🚨 [신규 추가] 글로벌 매수 필터용 지수 분봉(1분봉) 조회 API (ka10007)
+async def get_index_minute_data(session, market_cd):
+    params = {
+        'iscd': market_cd, # 코스피: '0001', 코스닥: '1001'
+        'tic_scope': '1', 
+        'upd_stkpc_tp': '1', 
+        'base_dt': datetime.now().strftime('%Y%m%d')
+    }
+    res, _ = await _request_api(session, '/api/dostk/chart', 'ka10007', params)
+    if not res: 
+        return []
+
+    parsed = []
+    # 지수 분봉의 경우 응답 배열의 키가 다를 수 있어 유연하게 탐색
+    data_list = res.get('ndx_min_pole_chart_qry', res.get('stk_min_pole_chart_qry', []))
+    for c in data_list:
+        try:
+            close_price = float(str(c.get('cur_prc', '0')).strip() or '0')
+        except:
+            close_price = 0.0
+            
+        parsed.append({
+            'time': c.get('cntr_tm', ''), 
+            'close': close_price
+        })
+    return parsed

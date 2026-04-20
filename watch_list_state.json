@@ -1,55 +1,29 @@
 {
-    "005930": {
-        "name": "\uc0bc\uc131\uc804\uc790",
+    "005490": {
+        "name": "POSCO\ud640\ub529\uc2a4",
         "market": "KOSPI",
-        "qty": 25,
-        "entry": 218500,
-        "sl": 215000,
-        "tp": 221000,
-        "status": "active",
-        "odno": "0613718",
-        "is_rvol": false,
-        "is_gemini": false,
-        "is_laptop": true,
-        "meta": {
-            "pullback_vol_ratio": 0.29,
-            "entry_atr": 892.86,
-            "vwap_gap": 1.1,
-            "strategy": "LAPTOP",
-            "macro_pct": 1.18,
-            "macro_trend": "\uc815\ubc30\uc5f4",
-            "macro_gap": 0.0
-        },
-        "entry_time": 1776307216.9778214,
-        "original_entry": 217000,
-        "max_reached": 218500,
-        "min_reached": 215250
-    },
-    "456040": {
-        "name": "OCI",
-        "market": "KOSPI",
-        "qty": 10,
-        "entry": 100000,
-        "sl": 98000,
-        "tp": 102700,
+        "qty": 2,
+        "entry": 381000,
+        "sl": 377000,
+        "tp": 385500,
         "status": "pending",
-        "odno": "0953424",
-        "is_rvol": false,
-        "is_gemini": true,
+        "odno": "0862415",
+        "is_rvol": true,
+        "is_gemini": false,
         "is_laptop": false,
         "meta": {
-            "vol_burst_ratio": 5.44,
+            "vol_burst_ratio": 6.63,
             "req_vol_ratio": 5.0,
-            "entry_atr": 721.43,
-            "vwap_gap": 2.93,
+            "entry_atr": 750.0,
+            "vwap_gap": 0.75,
             "upper_tail_ratio": 0,
-            "strategy": "GEMINI",
+            "strategy": "RVOL",
             "diag_msg": "\ubaa8\ub4e0 \uc870\uac74 \ucda9\uc871(Lv.3\uae09 \uc644\ubcbd)",
-            "macro_pct": 0.91,
+            "macro_pct": 0.39,
             "macro_trend": "\uc815\ubc30\uc5f4",
             "macro_gap": 0.0
         },
-        "entry_time": 1776321950.0795228,
-        "original_entry": 101100
+        "entry_time": 1776404914.796023,
+        "original_entry": 385000
     }
 }
