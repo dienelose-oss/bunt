@@ -1,29 +1,29 @@
 {
-    "005490": {
-        "name": "POSCO\ud640\ub529\uc2a4",
-        "market": "KOSPI",
-        "qty": 2,
-        "entry": 381000,
-        "sl": 377000,
-        "tp": 385500,
+    "209640": {
+        "name": "\uc640\uc774\uc81c\uc774\ub9c1\ud06c",
+        "market": "KOSDAQ",
+        "qty": 122,
+        "entry": 8190,
+        "sl": 8100,
+        "tp": 8320,
         "status": "pending",
-        "odno": "0862415",
-        "is_rvol": true,
-        "is_gemini": false,
+        "odno": "0200015",
+        "is_rvol": false,
+        "is_gemini": true,
         "is_laptop": false,
         "meta": {
-            "vol_burst_ratio": 6.63,
-            "req_vol_ratio": 5.0,
-            "entry_atr": 750.0,
-            "vwap_gap": 0.75,
+            "vol_burst_ratio": 4.67,
+            "req_vol_ratio": 2.0,
+            "entry_atr": 183.57,
+            "vwap_gap": 0.15,
             "upper_tail_ratio": 0,
-            "strategy": "RVOL",
+            "strategy": "GEMINI",
             "diag_msg": "\ubaa8\ub4e0 \uc870\uac74 \ucda9\uc871(Lv.3\uae09 \uc644\ubcbd)",
-            "macro_pct": 0.39,
+            "macro_pct": 0.61,
             "macro_trend": "\uc815\ubc30\uc5f4",
             "macro_gap": 0.0
         },
-        "entry_time": 1776404914.796023,
-        "original_entry": 385000
+        "entry_time": 1777248511.9569674,
+        "original_entry": 8190
     }
 }

@@ -180,8 +180,8 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
     req_vol_ratio = 5.0 if hhmm >= '0930' else 2.0
     if vol_burst_ratio < req_vol_ratio: return False, {}
     
-    # 🚨 VolBurst 킬 스위치 (거래량 12배 이상 폭발 시 작전/설거지 의심으로 진입 전면 차단)
-    if vol_burst_ratio > 12.0: return False, {}
+    # 🚨 VolBurst 킬 스위치 (거래량 8.5배 이상 폭발 시 작전/설거지 의심으로 진입 전면 차단)
+    if vol_burst_ratio > 8.5: return False, {}
 
     # 🚨 [신규] 1분봉 절대 거래대금 1억 원 이상 필터 (소외주 휩쏘 방지)
     trade_value = n1['close'] * n1['volume']
@@ -228,7 +228,7 @@ def check_gemini_momentum_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filt
         'strategy': 'GEMINI',
         'meta': {
             'vol_burst_ratio': round(vol_burst_ratio, 2),
-            'req_vol_ratio': req_vol_ratio, # 🚨 [신규] 나중에 세션별 통계 분석을 위해 요구 거래량 기준치 추가
+            'req_vol_ratio': req_vol_ratio,
             'entry_atr': round(atr, 2),
             'vwap_gap': round(vwap_gap, 2),
             'upper_tail_ratio': 0,
@@ -257,8 +257,8 @@ def check_rvol_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filter_lvl=2):
     req_rvol = 5.0 if hhmm >= '0930' else 3.0
     if rvol < req_rvol: return False, {}
     
-    # 거래량 12배 이상 폭발 시 작전/설거지 의심으로 진입 전면 차단
-    if rvol > 12.0: return False, {}
+    # 🚨 거래량 8.5배 이상 폭발 시 작전/설거지 의심으로 진입 전면 차단
+    if rvol > 8.5: return False, {}
 
     # 🚨 [신규] 1분봉 절대 거래대금 1억 원 이상 필터 (소외주 휩쏘 방지)
     trade_value = n1['close'] * n1['volume']
@@ -304,7 +304,7 @@ def check_rvol_model(candles, today_str, tp_pct=1.5, sl_pct=1.0, filter_lvl=2):
         'strategy': 'RVOL',
         'meta': {
             'vol_burst_ratio': round(rvol, 2),
-            'req_vol_ratio': req_rvol, # 🚨 [신규] 나중에 세션별 통계 분석을 위해 요구 거래량 기준치 추가
+            'req_vol_ratio': req_rvol,
             'entry_atr': round(atr, 2),
             'vwap_gap': round(vwap_gap, 2),
             'upper_tail_ratio': 0,

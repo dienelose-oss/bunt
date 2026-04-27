@@ -36,15 +36,14 @@ async def main():
     pending_setups = {} 
     accumulated_targets = {}  # 🚨 FIFO 누적 추적용 딕셔너리
     
-    max_profit_today = 0  # 🚨 당일 최고 수익금 추적용
-    last_scan_count = 0   # 🚨 최근 스캔 포착 종목 수 추적용
+    max_profit_today = 0  
+    last_scan_count = 0   
     last_monitor_time = 0
     last_scan_time = 0
     last_asset_record_time = 0
     last_auto_chart_time = 0
     last_sync_time = 0
     
-    # 🚨 시스템 지연시간(Latency) 측정 변수 추가
     scanner_latency = 0.0
     monitor_latency = 0.0
     
@@ -53,8 +52,11 @@ async def main():
     last_snapshot_date = None 
     awaiting_setting = None
     
-    current_macro_pct = 0.0  # 🚨 누락되었던 매크로 지수 변수 초기화 복구 완료
+    current_macro_pct = 0.0  
     daily_target_notified = False  
+    
+    daily_max_multiplier = 0
+    trailing_shutdown_line = 0
     
     last_engine_scan_time = "스캔 대기 중"
     last_macro_state = {'KOSPI': '대기중', 'KOSDAQ': '대기중'}
@@ -64,7 +66,6 @@ async def main():
 
     async with aiohttp.ClientSession() as session:
         user_settings = await load_or_init_settings(session)
-        # 🚨 가동/중지 상태 영속성 부여 (재시작해도 이전 상태 기억)
         if 'is_paused' not in user_settings:
             user_settings['is_paused'] = False
             
@@ -75,13 +76,13 @@ async def main():
         for code in auto_watch_list.keys():
             await kiwoom_api.ws_client.subscribe(code)
 
-        welcome_msg = f"🤖 [자동매매 시스템 가동 시작]\n초기화를 완료했습니다. 아래 대시보드에서 시스템을 통제하십시오."
+        welcome_msg = f"🤖 [하이브리드 시스템 가동 시작]\n초기화 완료. 조건검색 및 실시간 조회순위 매칭 엔진이 가동됩니다."
         dash_reply_markup = {
             "inline_keyboard": [
                 [{"text": "📈 관심종목 관리", "callback_data": "menu_watch"}, {"text": "👀 감시 현황", "callback_data": "menu_monitor"}],
                 [{"text": "💰 계좌 잔고", "callback_data": "menu_balance"}, {"text": "📊 누적 통계 분석", "callback_data": "menu_analysis"}],
                 [{"text": "⚙️ 엔진 세팅", "callback_data": "menu_setting"}, {"text": "💡 도움말", "callback_data": "menu_help"}],
-                [{"text": "💸 미수/반대매 방어 (D-2)", "callback_data": "menu_margin_clear"}],
+                [{"text": "💸 미수/반대매매 방어 (D-2)", "callback_data": "menu_margin_clear"}],
                 [{"text": "🎯 목표달성 플래너 세팅", "callback_data": "menu_planner"}]
             ]
         }
@@ -127,16 +128,33 @@ async def main():
                             for h_code, h_data in last_holdings.items():
                                 qty = h_data.get('qty', 0)
                                 if qty > 0:
-                                    rt_price = kiwoom_api.realtime_prices.get(h_code)
-                                    if not rt_price:
-                                        c1 = await kiwoom_api.get_candles(session, h_code, '1')
-                                        if c1: rt_price = abs(int(c1[0]['close']))
-                                    y_close = rt_price 
-                                    cd_d = await kiwoom_api.get_candles(session, h_code, 'D')
-                                    if cd_d and len(cd_d) > 1:
-                                        y_close = abs(int(cd_d[1]['close']))
-                                    if rt_price and y_close:
+                                    rt_price = None
+                                    y_close = None
+                                    
+                                    cached_rt = kiwoom_api.realtime_prices.get(h_code)
+                                    if cached_rt is not None:
+                                        rt_price = abs(int(float(str(cached_rt).replace(',', '').strip())))
+                                    else:
+                                        try:
+                                            c1 = await kiwoom_api.get_candles(session, h_code, '1')
+                                            if c1 and len(c1) > 0: 
+                                                rt_price = abs(int(float(str(c1[0]['close']).replace(',', '').strip())))
+                                        except: pass
+                                        await asyncio.sleep(0.1) 
+                                        
+                                    try:
+                                        cd_d = await kiwoom_api.get_candles(session, h_code, 'D')
+                                        if cd_d:
+                                            if cd_d[0]['time'][:8] == today_str_local and len(cd_d) > 1:
+                                                y_close = abs(int(float(str(cd_d[1]['close']).replace(',', '').strip())))
+                                            else:
+                                                y_close = abs(int(float(str(cd_d[0]['close']).replace(',', '').strip())))
+                                    except: pass
+                                    await asyncio.sleep(0.1)
+                                    
+                                    if rt_price is not None and y_close is not None:
                                         hold_pnl += (rt_price - y_close) * qty
+                                        
                             hypo_asset = base_amount + hold_pnl
                 except Exception as e:
                     print(f"벤치마크 연산 에러: {e}")
@@ -193,7 +211,7 @@ async def main():
                         [{"text": "📈 관심종목 관리", "callback_data": "menu_watch"}, {"text": "👀 감시 현황", "callback_data": "menu_monitor"}],
                         [{"text": "💰 계좌 잔고", "callback_data": "menu_balance"}, {"text": "📊 누적 통계 분석", "callback_data": "menu_analysis"}],
                         [{"text": "⚙️ 엔진 세팅", "callback_data": "menu_setting"}, {"text": "💡 도움말", "callback_data": "menu_help"}],
-                        [{"text": "💸 미수/반대매 방어 (D-2)", "callback_data": "menu_margin_clear"}],
+                        [{"text": "💸 미수/반대매매 방어 (D-2)", "callback_data": "menu_margin_clear"}],
                         [{"text": "🎯 목표달성 플래너 세팅", "callback_data": "menu_planner"}]
                     ]
                 }
@@ -339,7 +357,7 @@ async def main():
             
             if keep_trading:
                 user_settings['is_paused'] = False
-                await send_tg_message("♻️ [수익 실현 완료] 매도 후 기준 자산이 성공적으로 갱신되었습니다. 시스템을 중지하지 조고 새로운 매매를 계속 진행합니다.")
+                await send_tg_message("♻️ [수익 실현 완료] 매도 후 기준 자산이 성공적으로 갱신되었습니다. 시스템을 중지하지 않고 새로운 매매를 계속 진행합니다.")
             else:
                 user_settings['is_paused'] = True
                 await send_tg_message("🛑 [시스템 셧다운 완료] 이익 보존/목표 달성으로 모든 가동이 중지되었습니다.")
@@ -357,8 +375,8 @@ async def main():
             nonlocal current_macro_pct, last_engine_scan_time, max_assets_today, max_assets_time, \
                      awaiting_setting, last_monitor_time, last_scan_time, last_asset_record_time, \
                      last_auto_chart_time, last_sync_time, last_cleared_hour, last_daily_reset_date, last_snapshot_date, \
-                     last_macro_state, last_scanned_targets, daily_target_notified, accumulated_targets, max_profit_today, \
-                     scanner_latency, monitor_latency, last_scan_count
+                     last_macro_state, last_scanned_targets, daily_target_notified, max_profit_today, \
+                     scanner_latency, monitor_latency, last_scan_count, daily_max_multiplier, trailing_shutdown_line
             
             while True:
                 try:
@@ -367,7 +385,6 @@ async def main():
                     new_commands = await asyncio.to_thread(telegram_bot.fetch_commands)
                     
                     for cmd in new_commands:
-                        # --- [1단계] 텔레그램 단축키 및 콜백(버튼) 전처리 구역 ---
                         if cmd == 'ㅎ':
                             cmd = 'cb:menu_planner'
                             
@@ -381,7 +398,6 @@ async def main():
                             elif awaiting_setting:
                                 awaiting_setting = None
 
-                        # --- [2단계] 일반 텍스트 명령어 및 메인 실행 구역 ---
                         if cmd == 'ㄱ':
                             if len(asset_history) >= 2:
                                 await asyncio.to_thread(_generate_and_send_asset_chart, asset_history, user_settings['base_amount'], max_assets_today, max_assets_time)
@@ -455,6 +471,7 @@ async def main():
                                     if len(df) == 0: return f"\n[{engine_name}] 기록된 데이터가 없습니다.\n"
                                     def _categorize(row):
                                         reason = str(row.get('ExitReason', ''))
+                                        pnl = float(row.get('PnL(%)', 0))
                                         if '익절' in reason or '목표가' in reason: return 'Win'
                                         elif '본절' in reason: return 'Draw'
                                         else: return 'Loss'
@@ -536,8 +553,8 @@ async def main():
                         elif cmd == '감시':
                             watch_msg = "👀 [현재 감시 및 스캔 현황]\n\n"
                             watch_msg += f"⏱️ [시스템 지연(Latency) 측정기]\n"
-                            watch_msg += f"• 스캐너 루프: {scanner_latency:.2f}초\n"
-                            watch_msg += f"• 모니터 루프: {monitor_latency:.2f}초 (실시간 보유 {len(auto_watch_list)}종목)\n\n"
+                            watch_msg += f"• 하이브리드 스캐너 루프: {scanner_latency:.2f}초\n"
+                            watch_msg += f"• 주문/체결 모니터 루프: {monitor_latency:.2f}초 (실시간 보유 {len(auto_watch_list)}종목)\n\n"
                             
                             watch_msg += f"📊 시장 매크로 트렌드 (5MA-20MA)\n"
                             kpi_trend = last_macro_state.get('KOSPI', '대기중')
@@ -545,13 +562,12 @@ async def main():
                             watch_msg += f"• 코스피: {'📈 정배열' if kpi_trend == '정배열' else '📉 역배열' if kpi_trend == '역배열' else kpi_trend}\n"
                             watch_msg += f"• 코스닥: {'📈 정배열' if kdq_trend == '정배열' else '📉 역배열' if kdq_trend == '역배열' else kdq_trend}\n\n"
                             
-                            watch_msg += f"📡 딥스캔 타겟 현황\n"
-                            watch_msg += f"• 최근 스캔 포착: {last_scan_count}종목\n"
-                            watch_msg += f"• 당일 누적 감시: {len(accumulated_targets)}종목\n"
+                            watch_msg += f"📡 하이브리드 스캔 타겟 현황\n"
+                            watch_msg += f"• 조건검색 기반 실시간 포착: {last_scan_count}종목\n"
                             if last_scanned_targets:
-                                watch_msg += f"• 랭킹 Top: {', '.join(last_scanned_targets)}\n\n"
+                                watch_msg += f"• 최근 매칭 랭킹 (Top 10): {', '.join(last_scanned_targets)}\n\n"
                             else:
-                                watch_msg += "• 스캔 데이터 수집 중...\n\n"
+                                watch_msg += "• 조건검색/조회순위 교집합 매칭 대기 중...\n\n"
 
                             watch_msg += "🎯 [현재 진입 대기 및 보유 종목]\n"
                             if not auto_watch_list: 
@@ -787,7 +803,7 @@ async def main():
                                         
                                 await send_tg_message(msg)
                                 continue
-
+                                
                             elif cb_data == 'set_max_track':
                                 awaiting_setting = 'max_tracking_items'
                                 await send_tg_message("✏️ 당일 최대 누적 추적할 종목 수를 숫자로 입력하세요 (예: 30):")
@@ -925,7 +941,6 @@ async def main():
                                     elif awaiting_setting == 'cancel_timeout': user_settings['cancel_timeout_mins'] = int(val)
                                     elif awaiting_setting == 'autorr': user_settings['auto_rr_ratio'] = val
                                     elif awaiting_setting == 'target_amount': user_settings['target_amount'] = int(val)
-                                    elif awaiting_setting == 'max_tracking_items': user_settings['max_tracking_items'] = int(val)
                                         
                                     await send_tg_message("✅ 설정 변경이 완료되었습니다.")
                                     await save_settings()
@@ -944,7 +959,8 @@ async def main():
             nonlocal current_macro_pct, last_engine_scan_time, max_assets_today, max_assets_time, \
                      awaiting_setting, last_monitor_time, last_scan_time, last_asset_record_time, \
                      last_auto_chart_time, last_sync_time, last_cleared_hour, last_daily_reset_date, last_snapshot_date, \
-                     daily_target_notified, accumulated_targets, max_profit_today, last_scan_count
+                     daily_target_notified, max_profit_today, last_scan_count, \
+                     daily_max_multiplier, trailing_shutdown_line
             
             while True:
                 try:
@@ -957,7 +973,6 @@ async def main():
 
                     # 매일 아침 초기화
                     if now.hour == 7 and now.minute == 55 and last_daily_reset_date != today_str:
-                        # 🚨 [버그 수정] 재시작으로 인해 asset_history가 초기화되어도 무조건 전일자 차트 백업
                         yesterday = now - timedelta(days=1)
                         prev_date_str = yesterday.strftime('%Y%m%d')
                         archive_path = f"asset_chart_{prev_date_str}.png"
@@ -972,13 +987,16 @@ async def main():
                         asset_history.clear()    
                         max_assets_today = 0
                         max_assets_time = ""
-                        max_profit_today = 0      # 🚨 당일 최고 수익 초기화
-                        last_scan_count = 0       # 🚨 일일 누적 시 최근 스캔 종목 수 초기화
+                        max_profit_today = 0      
+                        last_scan_count = 0       
                         
                         user_settings['is_paused'] = False 
                         await save_settings()
                         
                         daily_target_notified = False
+                        daily_max_multiplier = 0
+                        trailing_shutdown_line = 0
+                        
                         alerted_obs.clear()
                         pending_setups.clear()
                         accumulated_targets.clear() # 🚨 일일 누적 추적 목록 초기화
@@ -990,12 +1008,10 @@ async def main():
                         msg += f"💰 금일 시작 기준 자산: {user_settings.get('base_amount', 0):,}원"
                         await send_tg_message(msg)
                     
-                    # 매 정각 화면 지우기
                     if now.minute == 0 and last_cleared_hour != now.hour:
                         os.system('cls' if os.name == 'nt' else 'clear')
                         last_cleared_hour = now.hour
 
-                    # 1분 단위 잔고 상태 동기화 (수동 매도 감지)
                     if is_active_day and is_trade_time and (current_timestamp - last_sync_time > 60):
                         if auto_watch_list and user_settings.get('auto_remove_unheld', False):
                             holdings = await kiwoom_api.get_holdings_data(session)
@@ -1011,7 +1027,6 @@ async def main():
                                 if state_changed: await save_watch_list(redis_client, auto_watch_list, use_redis)
                         last_sync_time = current_timestamp
 
-                    # 15:20 미수방어용 스냅샷 기록
                     if is_active_day and now.hour == 15 and now.minute == 20 and last_snapshot_date != today_str:
                         holdings_snap = await kiwoom_api.get_holdings_data(session)
                         if holdings_snap is not None:
@@ -1031,7 +1046,6 @@ async def main():
                             last_snapshot_date = today_str
                             await send_tg_message("📸 [15:20] 미수정리용 D-2 잔고 스냅샷이 안전하게 기록되었습니다.")
 
-                    # 실시간 자산 기록 (50초 이상 주기)
                     if is_active_day and now.second >= 3 and (current_timestamp - last_asset_record_time > 50):
                         is_premarket = (now.hour == 8 and 50 <= now.minute <= 59)
                         is_open_lag = (now.hour == 9 and now.minute == 0)
@@ -1056,47 +1070,63 @@ async def main():
                                     
                                     today_profit = current_assets - base_amount
                                     
-                                    # 🚨 당일 최고 수익금 실시간 갱신
-                                    if today_profit > max_profit_today: max_profit_today = today_profit
+                                    # 🚨 [버그 수정] 제공해주신 주식시장 운영시간표를 반영하여,
+                                    # 시장가 주문(03)이 접수 거부되는 장전/장후 시간대(에러코드 20 / 사유 2000)를 원천 차단합니다.
+                                    # 오직 정규장 및 장마감 동시호가 시간(09:00 ~ 15:30)에만 셧다운 로직이 가동되도록 락(Lock)을 걸었습니다.
+                                    is_regular_market = dt_time(9, 0) <= now.time() < dt_time(15, 30)
                                     
-                                    # 🚨 로직 1: 고정 금액 기준 이익 보존 검사
-                                    if user_settings.get('profit_preserve_on') and today_profit > 0 and not user_settings['is_paused']:
-                                        p_amt = user_settings.get('profit_preserve_amount', 0)
-                                        if today_profit <= p_amt and p_amt > 0:
-                                            await execute_shutdown_sequence("🛡️ 고정 이익 보존 발동", f"수익({int(today_profit):,}원)이 설정된 보존선({p_amt:,}원) 이하로 하락했습니다.")
+                                    if is_regular_market:
+                                        if today_profit > max_profit_today: max_profit_today = today_profit
+                                        
+                                        if user_settings.get('profit_preserve_on') and today_profit > 0 and not user_settings['is_paused']:
+                                            p_amt = user_settings.get('profit_preserve_amount', 0)
+                                            if today_profit <= p_amt and p_amt > 0:
+                                                await execute_shutdown_sequence("🛡️ 고정 이익 보존 발동", f"수익({int(today_profit):,}원)이 설정된 보존선({p_amt:,}원) 이하로 하락했습니다.")
 
-                                    # 🚨 로직 2: 비율형 추적(Trailing) 이익 보존 검사
-                                    if user_settings.get('profit_trailing_on') and max_profit_today > 0 and not user_settings['is_paused']:
-                                        t_pct = user_settings.get('profit_trailing_pct', 20.0)
-                                        threshold = max_profit_today * (1 - t_pct / 100.0)
-                                        if today_profit <= threshold and today_profit > 0:
-                                            await execute_shutdown_sequence("📉 추적 비율 이익 보존 발동", f"현재 수익({int(today_profit):,}원)이 당일 최고 수익({int(max_profit_today):,}원) 대비 {t_pct}% 이상 하락했습니다.")
+                                        if user_settings.get('profit_trailing_on') and max_profit_today > 0 and not user_settings['is_paused']:
+                                            t_pct = user_settings.get('profit_trailing_pct', 20.0)
+                                            threshold = max_profit_today * (1 - t_pct / 100.0)
+                                            if today_profit <= threshold and today_profit > 0:
+                                                await execute_shutdown_sequence("📉 추적 비율 이익 보존 발동", f"현재 수익({int(today_profit):,}원)이 당일 최고 수익({int(max_profit_today):,}원) 대비 {t_pct}% 이상 하락했습니다.")
 
-                                    if rem_days > 0 and current_assets > base_amount:
-                                        rate_type = str(user_settings.get('planner_rate_type', '복리'))
-                                        if rate_type == '복리':
-                                            compound_rate = 0
-                                            if current_assets > 0 and target_amt > 0:
-                                                compound_rate = (target_amt / current_assets) ** (1 / rem_days) - 1
-                                            daily_req = current_assets * compound_rate
-                                        else:
-                                            daily_req = (target_amt - current_assets) / rem_days
-                                            
-                                        if daily_req > 0 and today_profit >= daily_req and not daily_target_notified:
-                                            await send_tg_message(f"🎊 [일일 목표 달성!]\n오늘의 {rate_type} 목표 수익({int(daily_req):,}원)을 성공적으로 돌파했습니다! (현재: +{int(today_profit):,}원)\n(수익 2배 도달 시 설정에 따라 자동 셧다운이 발동될 수 있습니다.)")
-                                            daily_target_notified = True
-
-                                        target_threshold = daily_req * 2
-                                        if user_settings.get('auto_shutdown_on_target', False) and not user_settings['is_paused']:
-                                            if today_profit >= target_threshold and target_threshold > 0:
-                                                await execute_shutdown_sequence("🎉 목표 달성 자동 매도 발동", f"오늘 수익({int(today_profit):,}원)이 일일 목표의 2배({int(target_threshold):,}원)를 돌파했습니다!")
+                                        if rem_days > 0 and current_assets > base_amount:
+                                            rate_type = str(user_settings.get('planner_rate_type', '복리'))
+                                            if rate_type == '복리':
+                                                compound_rate = 0
+                                                if current_assets > 0 and target_amt > 0:
+                                                    compound_rate = (target_amt / current_assets) ** (1 / rem_days) - 1
+                                                daily_req = current_assets * compound_rate
+                                            else:
+                                                daily_req = (target_amt - current_assets) / rem_days
+                                                
+                                            if daily_req > 0 and not user_settings['is_paused']:
+                                                current_multiplier = int(today_profit // daily_req)
+                                                
+                                                if user_settings.get('auto_shutdown_on_target', False):
+                                                    if current_multiplier > daily_max_multiplier and current_multiplier >= 1:
+                                                        daily_max_multiplier = current_multiplier
+                                                        trailing_shutdown_line = daily_req * daily_max_multiplier * 0.8
+                                                        
+                                                        msg = f"🎊 [목표 {daily_max_multiplier}00% 달성! 보너스 스테이지 진입]\n"
+                                                        msg += f"현재 수익({int(today_profit):,}원)이 {daily_max_multiplier}차 목표를 돌파했습니다.\n"
+                                                        msg += f"🔥 신규 매수를 차단하지 않고 목표치를 상향하여 수익을 극대화합니다.\n"
+                                                        msg += f"🛡️ 수익 보존 셧다운선: {int(trailing_shutdown_line):,}원 (이탈 시 안전 셧다운)"
+                                                        await send_tg_message(msg)
+                                                        daily_target_notified = True
+                                                        
+                                                    if daily_max_multiplier >= 1 and today_profit <= trailing_shutdown_line:
+                                                        await execute_shutdown_sequence("🚨 목표 보존 트레일링 셧다운 발동", f"최고 수익 달성 후 방어선({int(trailing_shutdown_line):,}원) 이하로 꺾임이 감지되었습니다.")
+                                                        daily_max_multiplier = 0 
+                                                        
+                                                elif today_profit >= daily_req and not daily_target_notified:
+                                                    await send_tg_message(f"🎊 [일일 목표 달성!]\n오늘의 {rate_type} 목표 수익({int(daily_req):,}원)을 성공적으로 돌파했습니다! (현재: +{int(today_profit):,}원)\n(수익 2배 도달 시 설정에 따라 자동 셧다운이 발동될 수 있습니다.)")
+                                                    daily_target_notified = True
                                                 
                                 except Exception as e:
                                     print(f"🚨 [스케줄러 오류]: 셧다운/목표알림 검사 중 예외 발생 - {e}")
 
                         last_asset_record_time = time.time()
 
-                    # 자산 차트 10분마다 자동 발송
                     is_notify_time = (dt_time(8, 0) <= now.time() <= dt_time(20, 0))
                     if is_active_day and is_notify_time and now.minute % 10 == 0 and now.second >= 10 and (current_timestamp - last_auto_chart_time > 60):
                         if len(asset_history) >= 2:
@@ -1109,13 +1139,30 @@ async def main():
                     
                 await asyncio.sleep(1)
 
-        # 3. 시장 조건 검색 스캐너 태스크
+        # 3. 시장 조건 검색 스캐너 태스크 (🚨 하이브리드 엔진 도입)
         async def task_scanner():
             nonlocal current_macro_pct, last_engine_scan_time, max_assets_today, max_assets_time, \
                      awaiting_setting, last_monitor_time, last_scan_time, last_asset_record_time, \
                      last_auto_chart_time, last_sync_time, last_cleared_hour, last_daily_reset_date, last_snapshot_date, \
-                     last_macro_state, last_scanned_targets, accumulated_targets, scanner_latency, last_scan_count
+                     last_macro_state, last_scanned_targets, scanner_latency, last_scan_count
             
+            latest_top_20_dict = {}
+            active_cond_symbols = set()
+            last_top20_sec = -1
+            last_cond_poll_time = 0
+            last_macro_fetch_time = 0
+            recent_hybrid_targets = []
+            
+            macro_state = {'KOSPI': {'trend': '정배열', 'gap': 0.0, '5ma': 0, '20ma': 0}, 
+                           'KOSDAQ': {'trend': '정배열', 'gap': 0.0, '5ma': 0, '20ma': 0}}
+            
+            # 🚨 웹소켓 조건검색 신호 수신용 큐 세팅 (kiwoom_api.py 연동 대비)
+            if not hasattr(kiwoom_api, 'condition_queue'):
+                kiwoom_api.condition_queue = asyncio.Queue()
+            
+            # 🚨 1700 API 에러 방지용 스나이퍼 쿨타임 딕셔너리
+            last_sniped_time = {}
+
             while True:
                 try:
                     current_timestamp = time.time()
@@ -1135,25 +1182,18 @@ async def main():
                         if not (9 <= now.hour <= 10 and (now.hour == 9 or now.minute <= 30)):
                             allow_gem, allow_rvol, allow_lap = False, False, False
 
-                    # 시장 서킷 브레이커 방어 (과거 등락률 로직 유지)
                     if current_macro_pct <= -1.5:
                         allow_gem, allow_rvol, allow_lap = False, False, False
 
-                    if is_scan_time and (current_timestamp - last_scan_time > 50):
-                        _scan_start_time = time.time()  # 🚨 스캐너 실행 시간 측정 시작
-                        is_3m = (now.minute % 3 == 0)
-                        is_5m = (now.minute % 5 == 0)
+                    if is_scan_time:
+                        _scan_start_time = time.time()
                         
-                        if is_3m or is_5m:
+                        # 🚨 1. 매크로 갱신 (60초 주기)
+                        if current_timestamp - last_macro_fetch_time > 60:
                             current_macro_pct = await get_kosdaq_macro_trend(session) 
-                            
-                            # 🚨 1. 지수 분봉 수집 및 5MA/20MA 연산 (정배열/역배열 판별)
                             kpi_candles = await get_macro_minute_candles(session, 'KOSPI')
                             kdq_candles = await get_macro_minute_candles(session, 'KOSDAQ')
                             
-                            macro_state = {'KOSPI': {'trend': '정배열', 'gap': 0.0, '5ma': 0, '20ma': 0}, 
-                                           'KOSDAQ': {'trend': '정배열', 'gap': 0.0, '5ma': 0, '20ma': 0}}
-                                            
                             def _calc_ma(candles):
                                 if len(candles) < 20: return 0, 0, '정배열', 0.0
                                 closes = [c['close'] for c in candles[:20]]
@@ -1169,162 +1209,176 @@ async def main():
                             macro_state['KOSPI'] = {'trend': kpi_trend, 'gap': round(kpi_gap, 2), '5ma': kpi_5, '20ma': kpi_20}
                             macro_state['KOSDAQ'] = {'trend': kdq_trend, 'gap': round(kdq_gap, 2), '5ma': kdq_5, '20ma': kdq_20}
                             
-                            # 타겟 후보 수집 및 🚨 FIFO 로직 처리
-                            search_20 = await kiwoom_api.get_top_20_search_rank(session)
-                            volume_20 = await kiwoom_api.get_top_20_volume_rank(session)
-                            
-                            new_candidates = {}
-                            if search_20: new_candidates.update(search_20)
-                            if volume_20: new_candidates.update(volume_20)
-                            
-                            last_scan_count = len(new_candidates) # 🚨 최근 스캔 포착 종목 수 업데이트
-                            
-                            if user_settings.get('keep_tracking_today', True):
-                                for code, name in new_candidates.items():
-                                    if code not in accumulated_targets:
-                                        accumulated_targets[code] = name
-                                        
-                                max_track = user_settings.get('max_tracking_items', 30)
-                                while len(accumulated_targets) > max_track:
-                                    oldest = next(iter(accumulated_targets))
-                                    del accumulated_targets[oldest]
-                                    
-                                target_candidates = accumulated_targets.copy()
-                            else:
-                                target_candidates = new_candidates.copy()
-                            
-                            target_codes = list(target_candidates.keys())
-                            stock_dict.update(target_candidates)
-                            
-                            watchlist = user_settings.get('custom_watchlist', {})
-                            for wc_code, wc_name in watchlist.items():
-                                if wc_code not in target_codes:
-                                    target_codes.append(wc_code)
-                                    stock_dict[wc_code] = wc_name
-                                    
                             last_macro_state['KOSPI'] = macro_state['KOSPI']['trend']
                             last_macro_state['KOSDAQ'] = macro_state['KOSDAQ']['trend']
-                            last_scanned_targets = [stock_dict.get(c, c) for c in target_codes[:10]]
-                                    
-                            async def fetch_market_if_needed(c):
-                                if c not in _STOCK_MARKET_CACHE:
-                                    name, mkt = await get_stock_info_from_naver(session, c)
-                                    if name:
-                                        _STOCK_MARKET_CACHE[c] = mkt
-                                        stock_dict[c] = name
-                                        
-                            await asyncio.gather(*[fetch_market_if_needed(c) for c in target_codes])
+                            last_macro_fetch_time = current_timestamp
 
-                            if target_codes:
-                                holdings_check = await kiwoom_api.get_holdings_data(session) or {}
-                                async def fetch_with_sem(code, tf):
-                                    async with api_semaphore: 
-                                        await asyncio.sleep(0.1) 
-                                        return await kiwoom_api.get_candles(session, code, tf)
-                                        
-                                candles_3m_dict = dict(zip(target_codes, await asyncio.gather(*[fetch_with_sem(code, '3') for code in target_codes]))) if is_3m else {}
-                                candles_5m_dict = dict(zip(target_codes, await asyncio.gather(*[fetch_with_sem(code, '5') for code in target_codes]))) if is_5m else {}
+                        # 🚨 2. 실시간 조회순위 Top 20 갱신 (1, 3, 31, 33초)
+                        current_sec = now.second
+                        if current_sec in [1, 3, 31, 33] and current_sec != last_top20_sec:
+                            top20 = await kiwoom_api.get_top_20_search_rank(session)
+                            if top20:
+                                latest_top_20_dict = top20
+                                stock_dict.update(top20)
+                            last_top20_sec = current_sec
+
+                        # 🚨 3. 조건검색 실시간 신호 수신 연동 (웹소켓 큐 처리)
+                        while not kiwoom_api.condition_queue.empty():
+                            item = kiwoom_api.condition_queue.get_nowait()
+                            if item.get('type') == 'I':
+                                active_cond_symbols.add(item['code'])
+                                stock_dict[item['code']] = item.get('name', item['code'])
+                            elif item.get('type') == 'D':
+                                active_cond_symbols.discard(item['code'])
+
+                        # (웹소켓 미구현 대비) 안전한 REST API 폴링 폴백
+                        if current_timestamp - last_cond_poll_time > 2.0:
+                            try:
+                                cond_res = await kiwoom_api.get_condition_search_result(session, condition_name="BUNT_SCALP")
+                                if cond_res:
+                                    active_cond_symbols = set(cond_res.keys())
+                                    stock_dict.update(cond_res)
+                            except AttributeError:
+                                # 아직 API 연동 전이라면 거래량 급증 + 조회순위 혼합 사용 (기존과 동일한 효과)
+                                vol20 = await kiwoom_api.get_top_20_volume_rank(session)
+                                if vol20:
+                                    active_cond_symbols = set(vol20.keys())
+                                    stock_dict.update(vol20)
+                            last_cond_poll_time = current_timestamp
+
+                        # 🚨 4. 하이브리드 교집합 추출 엔진 (Condition ∩ Top20)
+                        hybrid_targets = [code for code in active_cond_symbols if code in latest_top_20_dict]
+                        
+                        # 텔레그램 LRU 디스플레이 로직 (방금 핫해진 종목을 맨 뒤로)
+                        for c in hybrid_targets:
+                            if c in recent_hybrid_targets: recent_hybrid_targets.remove(c)
+                            recent_hybrid_targets.append(c)
+                        recent_hybrid_targets = recent_hybrid_targets[-10:]
+                        
+                        target_codes = hybrid_targets.copy()
+                        
+                        # 사용자 관심종목 강제 병합
+                        watchlist = user_settings.get('custom_watchlist', {})
+                        for wc_code, wc_name in watchlist.items():
+                            if wc_code not in target_codes:
+                                target_codes.append(wc_code)
+                                stock_dict[wc_code] = wc_name
                                 
-                                for code in target_codes:
-                                    if code in holdings_check: continue
+                        last_scan_count = len(hybrid_targets)
+                        last_scanned_targets = [stock_dict.get(c, c) for c in recent_hybrid_targets[::-1]]
+                        
+                        async def fetch_market_if_needed(c):
+                            if c not in _STOCK_MARKET_CACHE:
+                                name, mkt = await get_stock_info_from_naver(session, c)
+                                if name:
+                                    _STOCK_MARKET_CACHE[c] = mkt
+                                    stock_dict[c] = name
                                     
-                                    market = _STOCK_MARKET_CACHE.get(code, 'KOSDAQ')
-                                    m_state = macro_state.get(market, {})
+                        await asyncio.gather(*[fetch_market_if_needed(c) for c in target_codes])
+
+                        # 🚨 5. 스나이퍼 전략 실행 (최적화 캔들 호출)
+                        if target_codes:
+                            holdings_check = await kiwoom_api.get_holdings_data(session) or {}
+                            
+                            for code in target_codes:
+                                # [핵심] 1700 에러 원천 차단: 50초 내에 이미 캔들을 검사한 종목은 스킵 (분봉 주기에 최적화)
+                                if current_timestamp - last_sniped_time.get(code, 0) < 50:
+                                    continue
                                     
-                                    # 정배열 킬 스위치 (역배열 시 매수 차단)
-                                    if m_state.get('trend') == '역배열':
-                                        continue
+                                if code in holdings_check: continue
+                                
+                                market = _STOCK_MARKET_CACHE.get(code, 'KOSDAQ')
+                                m_state = macro_state.get(market, {})
+                                if m_state.get('trend') == '역배열':
+                                    continue
+                                
+                                # 🚨 [스나이퍼 캔들 호출] 교집합 1~3개 종목에 대해서만 호출하므로 지연 시간 0%
+                                async with api_semaphore: 
+                                    await asyncio.sleep(0.15) 
+                                    c3 = await kiwoom_api.get_candles(session, code, '3')
+                                    c5 = await kiwoom_api.get_candles(session, code, '5')
                                     
-                                    curr_price_check = None
-                                    if is_3m and code in candles_3m_dict and candles_3m_dict[code]:
-                                        curr_price_check = abs(int(candles_3m_dict[code][0]['close']))
-                                    elif is_5m and code in candles_5m_dict and candles_5m_dict[code]:
-                                        curr_price_check = abs(int(candles_5m_dict[code][0]['close']))
-                                        
-                                    if curr_price_check is not None and curr_price_check < 1000:
-                                        continue
+                                if not c3 or not c5: continue
+                                if not c3[0]['time'].startswith(today_str): continue
+                                
+                                curr_price_check = abs(int(float(str(c3[0]['close']).replace(',', '').strip())))
+                                if curr_price_check < 1000: continue
+                                
+                                # 통과한 종목은 쿨타임 리셋
+                                last_sniped_time[code] = current_timestamp
+                                last_engine_scan_time = now.strftime('%H:%M:%S')
+
+                                # ⚡ RVOLx3 스캘핑 엔진 스캔
+                                if allow_rvol:
+                                    is_rvol, rvol_data = strategy.check_rvol_model(
+                                        c3, today_str, 
+                                        tp_pct=user_settings.get('gemini_tp_pct', 1.5), 
+                                        sl_pct=user_settings.get('gemini_sl_pct', 1.0), 
+                                        filter_lvl=user_settings.get('rvol_filter_lvl', 2)
+                                    )
+                                    if is_rvol:
+                                        alert_key = f"{code}_3m_RVOL_{rvol_data['time']}"
+                                        if alert_key not in alerted_obs:
+                                            alerted_obs.add(alert_key)
+                                            await save_alerted_obs(alerted_obs)
+                                            entry = rvol_data['entry_price']
+                                            pullback_pct = user_settings.get('gemini_pullback_pct', 1.0)
+                                            target_price_raw = int(entry * (1 - pullback_pct / 100.0))
+                                            tick_size = _get_tick_size(target_price_raw)
+                                            order_price = (target_price_raw // tick_size) * tick_size
                                             
-                                    if is_3m and code in candles_3m_dict:
-                                        candles_3m = candles_3m_dict[code]
-                                        if not candles_3m or not candles_3m[0]['time'].startswith(today_str): continue
-                                        last_engine_scan_time = now.strftime('%H:%M:%S')
+                                            qty = user_settings.get('rvol_amount', 500000) // order_price
+                                            if qty > 0:
+                                                await execute_buy_order(code, 'RVOLx3', qty, order_price, entry, rvol_data['sl_price'], rvol_data['dynamic_tp'], rvol_data['meta'], m_state, pullback_pct=pullback_pct)
+                                            continue 
 
-                                        # ⚡ RVOLx3 스캘핑 엔진 스캔
-                                        if allow_rvol:
-                                            is_rvol, rvol_data = strategy.check_rvol_model(
-                                                candles_3m, today_str, 
-                                                tp_pct=user_settings.get('gemini_tp_pct', 1.5), 
-                                                sl_pct=user_settings.get('gemini_sl_pct', 1.0), 
-                                                filter_lvl=user_settings.get('rvol_filter_lvl', 2)
-                                            )
-                                            if is_rvol:
-                                                alert_key = f"{code}_3m_RVOL_{rvol_data['time']}"
-                                                if alert_key not in alerted_obs:
-                                                    alerted_obs.add(alert_key)
-                                                    await save_alerted_obs(alerted_obs)
-                                                    entry = rvol_data['entry_price']
-                                                    pullback_pct = user_settings.get('gemini_pullback_pct', 1.0)
-                                                    target_price_raw = int(entry * (1 - pullback_pct / 100.0))
-                                                    tick_size = _get_tick_size(target_price_raw)
-                                                    order_price = (target_price_raw // tick_size) * tick_size
-                                                    
-                                                    qty = user_settings.get('rvol_amount', 500000) // order_price
-                                                    if qty > 0:
-                                                        await execute_buy_order(code, 'RVOLx3', qty, order_price, entry, rvol_data['sl_price'], rvol_data['dynamic_tp'], rvol_data['meta'], m_state, pullback_pct=pullback_pct)
-                                                    continue # RVOL 포착 시 제미나이 검사 스킵
+                                # 🤖 제미나이 스캘핑 엔진 스캔
+                                if allow_gem:
+                                    is_gemini, gemini_data = strategy.check_gemini_momentum_model(
+                                        c3, today_str, 
+                                        tp_pct=user_settings.get('gemini_tp_pct', 1.5), 
+                                        sl_pct=user_settings.get('gemini_sl_pct', 1.0), 
+                                        filter_lvl=user_settings.get('gemini_filter_lvl', 2)
+                                    )
+                                    if is_gemini:
+                                        alert_key = f"{code}_3m_GEMINI_{gemini_data['time']}"
+                                        if alert_key not in alerted_obs:
+                                            alerted_obs.add(alert_key)
+                                            await save_alerted_obs(alerted_obs)
+                                            entry = gemini_data['entry_price']
+                                            pullback_pct = user_settings.get('gemini_pullback_pct', 1.0)
+                                            target_price_raw = int(entry * (1 - pullback_pct / 100.0))
+                                            tick_size = _get_tick_size(target_price_raw)
+                                            order_price = (target_price_raw // tick_size) * tick_size
+                                            
+                                            qty = user_settings.get('gemini_amount', 500000) // order_price
+                                            if qty > 0:
+                                                await execute_buy_order(code, '제미나이', qty, order_price, entry, gemini_data['sl_price'], gemini_data['dynamic_tp'], gemini_data['meta'], m_state, pullback_pct=pullback_pct)
+                                            continue 
 
-                                        # 🤖 제미나이 스캘핑 엔진 스캔
-                                        if allow_gem:
-                                            is_gemini, gemini_data = strategy.check_gemini_momentum_model(
-                                                candles_3m, today_str, 
-                                                tp_pct=user_settings.get('gemini_tp_pct', 1.5), 
-                                                sl_pct=user_settings.get('gemini_sl_pct', 1.0), 
-                                                filter_lvl=user_settings.get('gemini_filter_lvl', 2)
-                                            )
-                                            if is_gemini:
-                                                alert_key = f"{code}_3m_GEMINI_{gemini_data['time']}"
-                                                if alert_key not in alerted_obs:
-                                                    alerted_obs.add(alert_key)
-                                                    await save_alerted_obs(alerted_obs)
-                                                    entry = gemini_data['entry_price']
-                                                    pullback_pct = user_settings.get('gemini_pullback_pct', 1.0)
-                                                    target_price_raw = int(entry * (1 - pullback_pct / 100.0))
-                                                    tick_size = _get_tick_size(target_price_raw)
-                                                    order_price = (target_price_raw // tick_size) * tick_size
-                                                    
-                                                    qty = user_settings.get('gemini_amount', 500000) // order_price
-                                                    if qty > 0:
-                                                        await execute_buy_order(code, '제미나이', qty, order_price, entry, gemini_data['sl_price'], gemini_data['dynamic_tp'], gemini_data['meta'], m_state, pullback_pct=pullback_pct)
-                                                    continue 
-
-                                    if is_5m and code in candles_5m_dict:
-                                        candles_5m = candles_5m_dict[code]
-                                        if not candles_5m or not candles_5m[0]['time'].startswith(today_str): continue
-                                        last_engine_scan_time = now.strftime('%H:%M:%S')
-
-                                        if allow_lap:
-                                            is_lap, lap_data = strategy.check_laptop_swing_model(candles_5m, today_str, user_settings['risk_amount'], user_settings.get('auto_rr_ratio', 2.0))
-                                            if is_lap:
-                                                alert_key = f"{code}_5m_LAPTOP_{lap_data['time']}"
-                                                if alert_key not in alerted_obs:
-                                                    alerted_obs.add(alert_key)
-                                                    await save_alerted_obs(alerted_obs)
-                                                    entry = lap_data['entry_price']
-                                                    yield_ticks = user_settings.get('buy_yield_ticks', 3)
-                                                    tick_size = _get_tick_size(entry)
-                                                    order_price = entry + (tick_size * yield_ticks)
-                                                    
-                                                    qty = lap_data['qty'] 
-                                                    if qty > 0:
-                                                        await execute_buy_order(code, '랩탑 스윙', qty, order_price, entry, lap_data['sl_price'], lap_data['dynamic_tp'], lap_data['meta'], m_state, yield_ticks=yield_ticks)
-                                                continue
-                        scanner_latency = round(time.time() - _scan_start_time, 2)  # 🚨 스캐너 실행 완료 후 지연시간 기록
-                        last_scan_time = time.time()
+                                # 💻 랩탑 스윙 엔진 스캔
+                                if allow_lap:
+                                    is_lap, lap_data = strategy.check_laptop_swing_model(c5, today_str, user_settings['risk_amount'], user_settings.get('auto_rr_ratio', 2.0))
+                                    if is_lap:
+                                        alert_key = f"{code}_5m_LAPTOP_{lap_data['time']}"
+                                        if alert_key not in alerted_obs:
+                                            alerted_obs.add(alert_key)
+                                            await save_alerted_obs(alerted_obs)
+                                            entry = lap_data['entry_price']
+                                            yield_ticks = user_settings.get('buy_yield_ticks', 3)
+                                            tick_size = _get_tick_size(entry)
+                                            order_price = entry + (tick_size * yield_ticks)
+                                            
+                                            qty = lap_data['qty'] 
+                                            if qty > 0:
+                                                await execute_buy_order(code, '랩탑 스윙', qty, order_price, entry, lap_data['sl_price'], lap_data['dynamic_tp'], lap_data['meta'], m_state, yield_ticks=yield_ticks)
+                                        continue
+                        scanner_latency = round(time.time() - _scan_start_time, 2)  
                 except Exception as e:
                     traceback.print_exc()
                     print(f"🚨 [System] task_scanner 크래시 발생 및 복구 중: {e}")
                     
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
 
         # 4. 실시간 웹소켓 가격 감시 태스크 (블로킹 우회)
         async def   task_monitor():
@@ -1333,7 +1387,7 @@ async def main():
                      last_auto_chart_time, last_sync_time, last_cleared_hour, last_daily_reset_date, last_snapshot_date, \
                      monitor_latency, last_scan_count
                      
-            last_pending_check_time = 0 # 🚨 잔고 편입 확인용 타이머
+            last_pending_check_time = 0 
             
             while True:
                 try:
@@ -1344,10 +1398,9 @@ async def main():
                     is_monitor_time = dt_time(9, 0) <= now.time() <= (dt_time(20, 0) if user_settings.get('nxt_scan_enabled', False) else dt_time(15, 30))
 
                     if is_active_day and is_monitor_time and auto_watch_list and (current_timestamp - last_monitor_time >= 1):
-                        _mon_start_time = time.time()  # 🚨 모니터 실행 시간 측정 시작
+                        _mon_start_time = time.time()  
                         state_changed = False
                         
-                        # 🚨 [개선된 체결 감지 로직]: 대기주문이 있을 때만 3초마다 잔고를 조회하여 실제 편입 여부를 완벽히 판별
                         has_pending = any(c['status'] == 'pending' for c in auto_watch_list.values())
                         if has_pending and (current_timestamp - last_pending_check_time >= 3):
                             holdings_check = await kiwoom_api.get_holdings_data(session)
@@ -1412,8 +1465,6 @@ async def main():
 
                                 if cond.get('half_sold'):
                                     new_sl_raw = int(cond['max_reached'] * 0.98)
-                                    
-                                    # 🚨 [Action 2] 스마트 방어: 반익절 후 수익 반납 방지를 위해 최소 +0.5% 구간에 강제 손절선(익절선) 배치
                                     min_sl_raw = int(cond['entry'] * 1.005)
                                     new_sl_raw = max(new_sl_raw, min_sl_raw)
                                     
@@ -1430,7 +1481,7 @@ async def main():
                                     state_changed = await process_sell_and_log(code, cond, rt_price, sell_qty, reason, is_half=False) or state_changed
                                 
                             if state_changed: await save_watch_list(redis_client, auto_watch_list, use_redis)
-                        monitor_latency = round(time.time() - _mon_start_time, 2)  # 🚨 모니터 실행 완료 후 지연시간 기록
+                        monitor_latency = round(time.time() - _mon_start_time, 2)  
                         last_monitor_time = time.time()
                 except Exception as e:
                     traceback.print_exc()

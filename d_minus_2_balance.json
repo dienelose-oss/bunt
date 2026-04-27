@@ -1,232 +1,4 @@
 {
-    "20260407": {
-        "003280": {
-            "name": "\ud765\uc544\ud574\uc6b4",
-            "prpr": 3781,
-            "qty": 168
-        },
-        "005930": {
-            "name": "\uc0bc\uc131\uc804\uc790",
-            "prpr": 195847,
-            "qty": 45
-        },
-        "047040": {
-            "name": "\ub300\uc6b0\uac74\uc124",
-            "prpr": 17280,
-            "qty": 165
-        },
-        "100790": {
-            "name": "\ubbf8\ub798\uc5d0\uc14b\ubca4\ucc98\ud22c\uc790",
-            "prpr": 26837,
-            "qty": 192
-        },
-        "137950": {
-            "name": "\uc81c\uc774\uc528\ucf00\ubbf8\uce7c",
-            "prpr": 5028,
-            "qty": 328
-        },
-        "161000": {
-            "name": "\uc560\uacbd\ucf00\ubbf8\uce7c",
-            "prpr": 12161,
-            "qty": 140
-        },
-        "000660": {
-            "name": "*SK\ud558\uc774\ub2c9\uc2a4",
-            "prpr": 912877,
-            "qty": 22
-        }
-    },
-    "20260408": {
-        "003280": {
-            "name": "\ud765\uc544\ud574\uc6b4",
-            "prpr": 2982,
-            "qty": 168
-        },
-        "006400": {
-            "name": "\uc0bc\uc131SDI",
-            "prpr": 469918,
-            "qty": 4
-        },
-        "010140": {
-            "name": "\uc0bc\uc131\uc911\uacf5\uc5c5",
-            "prpr": 28235,
-            "qty": 70
-        },
-        "034020": {
-            "name": "\ub450\uc0b0\uc5d0\ub108\ube4c\ub9ac\ud2f0",
-            "prpr": 100968,
-            "qty": 19
-        },
-        "064260": {
-            "name": "\ub2e4\ub0a0",
-            "prpr": 7462,
-            "qty": 265
-        },
-        "086520": {
-            "name": "\uc5d0\ucf54\ud504\ub85c",
-            "prpr": 152349,
-            "qty": 26
-        },
-        "137950": {
-            "name": "\uc81c\uc774\uc528\ucf00\ubbf8\uce7c",
-            "prpr": 4459,
-            "qty": 328
-        },
-        "161000": {
-            "name": "\uc560\uacbd\ucf00\ubbf8\uce7c",
-            "prpr": 12540,
-            "qty": 140
-        },
-        "322000": {
-            "name": "HD\ud604\ub300\uc5d0\ub108\uc9c0\uc194\ub8e8\uc158",
-            "prpr": 171006,
-            "qty": 11
-        },
-        "450080": {
-            "name": "\uc5d0\ucf54\ud504\ub85c\uba38\ud2f0",
-            "prpr": 76424,
-            "qty": 26
-        },
-        "475150": {
-            "name": "SK\uc774\ud130\ub2c9\uc2a4",
-            "prpr": 57667,
-            "qty": 34
-        },
-        "000660": {
-            "name": "*SK\ud558\uc774\ub2c9\uc2a4",
-            "prpr": 1037608,
-            "qty": 22
-        }
-    },
-    "20260409": {
-        "003280": {
-            "name": "\ud765\uc544\ud574\uc6b4",
-            "prpr": 3117,
-            "qty": 168
-        },
-        "006400": {
-            "name": "\uc0bc\uc131SDI",
-            "prpr": 480397,
-            "qty": 4
-        },
-        "034020": {
-            "name": "\ub450\uc0b0\uc5d0\ub108\ube4c\ub9ac\ud2f0",
-            "prpr": 99770,
-            "qty": 19
-        },
-        "047040": {
-            "name": "\ub300\uc6b0\uac74\uc124",
-            "prpr": 23096,
-            "qty": 85
-        },
-        "064260": {
-            "name": "\ub2e4\ub0a0",
-            "prpr": 7153,
-            "qty": 265
-        },
-        "086520": {
-            "name": "\uc5d0\ucf54\ud504\ub85c",
-            "prpr": 148358,
-            "qty": 26
-        },
-        "137950": {
-            "name": "\uc81c\uc774\uc528\ucf00\ubbf8\uce7c",
-            "prpr": 4594,
-            "qty": 328
-        },
-        "161000": {
-            "name": "\uc560\uacbd\ucf00\ubbf8\uce7c",
-            "prpr": 12420,
-            "qty": 140
-        },
-        "322000": {
-            "name": "HD\ud604\ub300\uc5d0\ub108\uc9c0\uc194\ub8e8\uc158",
-            "prpr": 164121,
-            "qty": 11
-        },
-        "450080": {
-            "name": "\uc5d0\ucf54\ud504\ub85c\uba38\ud2f0",
-            "prpr": 74727,
-            "qty": 26
-        },
-        "000660": {
-            "name": "*SK\ud558\uc774\ub2c9\uc2a4",
-            "prpr": 993703,
-            "qty": 22
-        }
-    },
-    "20260410": {
-        "001440": {
-            "name": "\ub300\ud55c\uc804\uc120",
-            "prpr": 31627,
-            "qty": 62
-        },
-        "003280": {
-            "name": "\ud765\uc544\ud574\uc6b4",
-            "prpr": 3277,
-            "qty": 168
-        },
-        "006360": {
-            "name": "GS\uac74\uc124",
-            "prpr": 37563,
-            "qty": 47
-        },
-        "006400": {
-            "name": "\uc0bc\uc131SDI",
-            "prpr": 479895,
-            "qty": 4
-        },
-        "009150": {
-            "name": "\uc0bc\uc131\uc804\uae30",
-            "prpr": 562705,
-            "qty": 3
-        },
-        "010820": {
-            "name": "\ud37c\uc2a4\ud14d",
-            "prpr": 11254,
-            "qty": 176
-        },
-        "011200": {
-            "name": "HMM",
-            "prpr": 21600,
-            "qty": 91
-        },
-        "024060": {
-            "name": "\ud765\uad6c\uc11d\uc720",
-            "prpr": 19275,
-            "qty": 102
-        },
-        "028050": {
-            "name": "\uc0bc\uc131E&A",
-            "prpr": 51281,
-            "qty": 38
-        },
-        "079550": {
-            "name": "LIG\ub125\uc2a4\uc6d0",
-            "prpr": 922875,
-            "qty": 2
-        },
-        "086520": {
-            "name": "\uc5d0\ucf54\ud504\ub85c",
-            "prpr": 146761,
-            "qty": 26
-        },
-        "272210": {
-            "name": "\ud55c\ud654\uc2dc\uc2a4\ud15c",
-            "prpr": 133991,
-            "qty": 14
-        },
-        "450080": {
-            "name": "\uc5d0\ucf54\ud504\ub85c\uba38\ud2f0",
-            "prpr": 73430,
-            "qty": 26
-        },
-        "000660": {
-            "name": "*SK\ud558\uc774\ub2c9\uc2a4",
-            "prpr": 1024636,
-            "qty": 22
-        }
-    },
     "20260413": {
         "000660": {
             "name": "*SK\ud558\uc774\ub2c9\uc2a4",
@@ -472,6 +244,109 @@
             "name": "\ud604\ub300\ubb34\ubca1\uc2a4",
             "prpr": 30929,
             "qty": 30
+        }
+    },
+    "20260421": {
+        "003280": {
+            "name": "\ud765\uc544\ud574\uc6b4",
+            "prpr": 3172,
+            "qty": 11851
+        },
+        "010140": {
+            "name": "\uc0bc\uc131\uc911\uacf5\uc5c5",
+            "prpr": 30080,
+            "qty": 142
+        },
+        "014940": {
+            "name": "\uc624\ub9ac\uc5d4\ud0c8\uc815\uacf5",
+            "prpr": 8490,
+            "qty": 1851
+        },
+        "034020": {
+            "name": "\ub450\uc0b0\uc5d0\ub108\ube4c\ub9ac\ud2f0",
+            "prpr": 115234,
+            "qty": 83
+        },
+        "086520": {
+            "name": "\uc5d0\ucf54\ud504\ub85c",
+            "prpr": 163323,
+            "qty": 35
+        },
+        "131760": {
+            "name": "\ud30c\uc778\ud14d",
+            "prpr": 2035,
+            "qty": 1020
+        }
+    },
+    "20260422": {
+        "003280": {
+            "name": "\ud765\uc544\ud574\uc6b4",
+            "prpr": 3097,
+            "qty": 11851
+        },
+        "006800": {
+            "name": "\ubbf8\ub798\uc5d0\uc14b\uc99d\uad8c",
+            "prpr": 68852,
+            "qty": 3
+        },
+        "014940": {
+            "name": "\uc624\ub9ac\uc5d4\ud0c8\uc815\uacf5",
+            "prpr": 8570,
+            "qty": 1851
+        },
+        "131760": {
+            "name": "\ud30c\uc778\ud14d",
+            "prpr": 2035,
+            "qty": 1020
+        },
+        "272210": {
+            "name": "\ud55c\ud654\uc2dc\uc2a4\ud15c",
+            "prpr": 133791,
+            "qty": 7
+        }
+    },
+    "20260423": {
+        "006800": {
+            "name": "\ubbf8\ub798\uc5d0\uc14b\uc99d\uad8c",
+            "prpr": 67355,
+            "qty": 3
+        },
+        "010120": {
+            "name": "LS ELECTRIC",
+            "prpr": 216001,
+            "qty": 268
+        },
+        "014940": {
+            "name": "\uc624\ub9ac\uc5d4\ud0c8\uc815\uacf5",
+            "prpr": 8320,
+            "qty": 1851
+        },
+        "272210": {
+            "name": "\ud55c\ud654\uc2dc\uc2a4\ud15c",
+            "prpr": 129701,
+            "qty": 7
+        },
+        "396500": {
+            "name": "TIGER \ubc18\ub3c4\uccb4TOP10",
+            "prpr": 37753,
+            "qty": 78
+        }
+    },
+    "20260424": {
+        "003280": {
+            "name": "\ud765\uc544\ud574\uc6b4",
+            "prpr": 3152,
+            "qty": 3072
+        },
+        "010120": {
+            "name": "LS ELECTRIC",
+            "prpr": 226978,
+            "qty": 95
+        },
+        "014940": {
+            "name": "\uc624\ub9ac\uc5d4\ud0c8\uc815\uacf5",
+            "prpr": 8340,
+            "qty": 1851
         }
     }
 }
