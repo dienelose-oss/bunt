@@ -6,7 +6,7 @@ last_update_id = 0
 URL = f"https://api.telegram.org/bot{telegram_token}"
 
 def send_message(msg, reply_markup=None, reply_to_message_id=None):
-    """일반 텍스트 및 버튼 메뉴 전송 (타임아웃 10초 확장 및 3회 재시도)"""
+    """일반 텍스트 및 버튼 메뉴 전송 (네트워크 단절 방어 및 지수 백오프 적용)"""
     url = f"{URL}/sendMessage"
     payload = {
         'chat_id': telegram_chat_id, 
@@ -18,7 +18,7 @@ def send_message(msg, reply_markup=None, reply_to_message_id=None):
     if reply_to_message_id:
         payload['reply_to_message_id'] = reply_to_message_id
         
-    for attempt in range(3):
+    for attempt in range(5):  # 🚨 최대 5회 재시도 (방어력 강화)
         try:
             res = requests.post(url, json=payload, timeout=10)
             data = res.json()
@@ -26,7 +26,6 @@ def send_message(msg, reply_markup=None, reply_to_message_id=None):
             if data.get('ok'):
                 return data['result'].get('message_id')
             else:
-                # 🚨 텔레그램 서버가 전송을 거부했을 때의 방어 및 복구 로직
                 err_desc = data.get('description', '알 수 없는 에러')
                 print(f"⚠️ 텔레그램 텍스트 전송 거부: {err_desc}")
                 
@@ -37,12 +36,12 @@ def send_message(msg, reply_markup=None, reply_to_message_id=None):
                     continue 
                 break 
                 
-        except requests.exceptions.Timeout:
-            print(f"⚠️ 텔레그램 텍스트 전송 지연 (재시도 {attempt+1}/3)")
-            time.sleep(1) 
         except Exception as e:
-            print(f"텔레그램 전송 실패: {e}")
-            break
+            wait_time = 1.5 ** attempt  # 🚨 지수 백오프 (1.0초 -> 1.5초 -> 2.25초 ...)
+            print(f"⚠️ 텔레그램 네트워크 연결 오류 (재시도 {attempt+1}/5, {wait_time:.1f}초 대기): {e}")
+            time.sleep(wait_time)
+            
+    print("❌ 텔레그램 메시지 전송 최종 실패 (Silent Pass: 매매 엔진은 멈추지 않습니다)")
     return None
 
 def edit_message_text(msg_id, msg, reply_markup=None):
@@ -57,7 +56,7 @@ def edit_message_text(msg_id, msg, reply_markup=None):
     if reply_markup:
         payload['reply_markup'] = reply_markup
         
-    for _ in range(3):
+    for attempt in range(5):
         try:
             res = requests.post(url, json=payload, timeout=10)
             data = res.json()
@@ -69,8 +68,10 @@ def edit_message_text(msg_id, msg, reply_markup=None):
                     del payload['parse_mode']
                     continue
                 break
-        except Exception:
-            time.sleep(1)
+        except Exception as e:
+            wait_time = 1.5 ** attempt
+            print(f"⚠️ 텔레그램 메시지 수정 네트워크 오류 (재시도 {attempt+1}/5, {wait_time:.1f}초 대기): {e}")
+            time.sleep(wait_time)
     return False
 
 def pin_chat_message(msg_id):
@@ -81,27 +82,27 @@ def pin_chat_message(msg_id):
         'message_id': msg_id,
         'disable_notification': True
     }
-    try:
-        requests.post(url, json=payload, timeout=5)
-    except Exception:
-        pass
+    for attempt in range(3):
+        try:
+            requests.post(url, json=payload, timeout=5)
+            break
+        except Exception:
+            time.sleep(1)
 
 def send_photo(photo_path, caption=""):
-    """차트 이미지 전송 (타임아웃 30초 확장 및 3회 재시도)"""
+    """차트 이미지 전송 (네트워크 단절 방어 및 지수 백오프 적용)"""
     url = f"{URL}/sendPhoto"
-    for attempt in range(3):
+    for attempt in range(5):
         try:
             with open(photo_path, 'rb') as photo:
                 payload = {'chat_id': telegram_chat_id, 'caption': caption}
                 files = {'photo': photo}
                 requests.post(url, data=payload, files=files, timeout=30)
             break 
-        except requests.exceptions.Timeout:
-            print(f"⚠️ 텔레그램 사진 업로드 지연 (재시도 {attempt+1}/3)")
-            time.sleep(2) 
         except Exception as e:
-            print(f"사진 전송 실패: {e}")
-            break
+            wait_time = 2 ** attempt
+            print(f"⚠️ 텔레그램 사진 업로드 연결 오류 (재시도 {attempt+1}/5, {wait_time}초 대기): {e}")
+            time.sleep(wait_time)
 
 def answer_callback_query(callback_query_id):
     """버튼 클릭 로딩(스피너) 해제"""
@@ -139,7 +140,8 @@ def fetch_commands():
                         
                     if cb_data:
                         commands.append(f"cb:{cb_data}")
-    except Exception:
-        pass 
+    except Exception as e:
+        # 🚨 네트워크 단절 시 예외를 조용히 무시하고 1초 대기하여 무한 루프 과부하 방지
+        time.sleep(1)
         
     return commands

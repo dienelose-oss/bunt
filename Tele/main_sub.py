@@ -8,6 +8,7 @@ import re
 import ast
 import shutil
 import pandas as pd
+import socket
 import redis.asyncio as redis
 from datetime import datetime, time as dt_time, timezone, timedelta 
 import matplotlib
@@ -36,6 +37,10 @@ KST = timezone(timedelta(hours=9))
 
 # 코스피/코스닥 소속 시장 캐싱 딕셔너리
 _STOCK_MARKET_CACHE = {}
+
+# 🚨 [신규] 대시보드 API 호출 병목 제거용 인메모리 캐시
+_YESTERDAY_CLOSE_CACHE = {}
+_RT_PRICE_CACHE = {}
 
 
 # ---------------------------------------------------------
@@ -185,10 +190,13 @@ async def load_or_init_settings(session):
             
     print("초기 설정 파일 생성 중. API로 잔고를 확인합니다...")
     while True:
-        assets = await kiwoom_api.get_estimated_assets(session)
-        if assets is not None:
-            default_settings['base_amount'] = assets
-            break
+        try:
+            assets = await kiwoom_api.get_estimated_assets(session)
+            if assets is not None:
+                default_settings['base_amount'] = assets
+                break
+        except Exception:
+            pass
         await asyncio.sleep(3)
         
     def _save():
@@ -210,7 +218,11 @@ def write_trade_log(filename, headers, row_data):
 # 4. 외부 API 크롤링 및 시각화 함수
 # ---------------------------------------------------------
 async def send_tg_message(msg, reply_markup=None):
-    await asyncio.to_thread(telegram_bot.send_message, msg, reply_markup=reply_markup)
+    # 🚨 텔레그램 최종 발송단에서도 예외를 집어삼키는 무적 방어 적용 (메인 루프 크래시 원천 차단)
+    try:
+        await asyncio.to_thread(telegram_bot.send_message, msg, reply_markup=reply_markup)
+    except Exception as e:
+        print(f"⚠️ [Silent Pass] 텔레그램 발송 예외 무시: {e}")
 
 async def get_stock_info_from_naver(session, code):
     url = f"https://m.stock.naver.com/api/stock/{code}/basic"
@@ -339,9 +351,20 @@ async def main_loop():
         ws_manager = kiwoom_api.KISWebSocket(session)
         await ws_manager.connect()
 
+        # 🚨 매크로 지수 조회용 로컬 타이머 변수
+        last_macro_check_time = 0
+        last_asset_check_time = 0
+        last_asset_record_time = 0
+        
+        max_assets_today = 0
+        max_assets_time = ""
+        max_profit_today = 0
+        asset_history = []
+
         # 무한 루프 시작
         while True:
             try:
+                current_timestamp = time.time()
                 now = datetime.now(KST)
                 current_time_int = now.hour * 100 + now.minute
                 today_str = now.strftime('%Y%m%d')
@@ -352,20 +375,98 @@ async def main_loop():
                 # =========================================================
                 # 🌟 [글로벌 추세 필터] 코스피/코스닥 1분봉 5선 > 20선 정배열 확인
                 # =========================================================
-                if strategy.global_market_filter.needs_update(interval_seconds=60):
-                    # API 한도 방지를 위해 1분에 1번만 지수 데이터를 호출합니다.
-                    kospi_data = await kiwoom_api.get_index_minute_data(session, '0001')
-                    kosdaq_data = await kiwoom_api.get_index_minute_data(session, '1001')
+                # 🚨 분봉 캔들이 확정되는 매 분 01~02초 사이에만 조회를 실행
+                if now.second in [1, 2] and (current_timestamp - last_macro_check_time > 50):
+                    last_macro_check_time = current_timestamp # 즉시 시간 갱신으로 동일 주기 내 중복 실행 원천 차단
                     
-                    is_trend_good = strategy.global_market_filter.update_trend(kospi_data, kosdaq_data)
+                    try:
+                        # API 한도 방지를 위해 1분에 1번만 지수 데이터를 호출합니다.
+                        kospi_data = await kiwoom_api.get_index_minute_data(session, '0001')
+                        kosdaq_data = await kiwoom_api.get_index_minute_data(session, '1001')
+                        
+                        if kospi_data is None or kosdaq_data is None:
+                            print(f"📡 [System {now.strftime('%H:%M:%S')}] 지수 조회 통신 실패. 네트워크 연결 대기...")
+                            await asyncio.sleep(5)
+                            continue
+                            
+                        is_trend_good = strategy.global_market_filter.update_trend(kospi_data, kosdaq_data)
+                        
+                        trend_status = "🟢 정배열 (안전)" if is_trend_good else "🔴 역배열 (매수 차단)"
+                        print(f"📊 [시장 추세 {now.strftime('%H:%M:%S')}] 코스피/코스닥 상태: {trend_status}")
+                    except Exception as e:
+                        print(f"📡 [System] 매크로 조회 네트워크 에러 (Silent Pass): {e}")
+                        await asyncio.sleep(5)
+                        continue
+
+                # =========================================================
+                # 💰 [자산 스캔 및 셧다운 방어] 10초 주기 정밀 스캔
+                # =========================================================
+                is_active_day = not (now.weekday() >= 5) and not settings.get('is_paused', False)
+                if is_active_day and (current_timestamp - last_asset_check_time > 10):
+                    last_asset_check_time = current_timestamp
                     
-                    # 콘솔 로깅 (텔레그램 알림은 너무 잦으므로 생략 또는 옵션화 권장)
-                    trend_status = "🟢 정배열 (안전)" if is_trend_good else "🔴 역배열 (매수 차단)"
-                    print(f"📊 [시장 추세 {now.strftime('%H:%M:%S')}] 코스피/코스닥 상태: {trend_status}")
+                    is_premarket = (now.hour == 8 and 50 <= now.minute <= 59)
+                    is_open_lag = (now.hour == 9 and now.minute == 0)
+                    if not is_premarket and not is_open_lag:
+                        try:
+                            current_assets = await kiwoom_api.get_estimated_assets(session)
+                            if current_assets is not None:
+                                current_assets = int(float(str(current_assets).replace(',', '').strip()))
+                                
+                                if current_assets > max_assets_today:
+                                    max_assets_today, max_assets_time = current_assets, now.strftime('%H:%M:%S')
+                                
+                                is_notify_time = (dt_time(8, 0) <= now.time() <= dt_time(20, 0))
+                                # 🚨 차트용 자산 기록은 기존처럼 50초 주기 유지
+                                if is_notify_time and (current_timestamp - last_asset_record_time > 50):
+                                    asset_history.append((now, current_assets))
+                                    await asyncio.to_thread(lambda: csv.writer(open(ASSET_FILE, 'a', newline='')).writerow([now.strftime('%Y-%m-%d %H:%M:%S'), current_assets]))
+                                    last_asset_record_time = current_timestamp
+                                
+                                base_amount = int(float(str(settings.get('base_amount', current_assets)).replace(',', '').strip()))
+                                today_profit = current_assets - base_amount
+                                
+                                is_regular_market = dt_time(9, 0) <= now.time() < dt_time(15, 30)
+                                
+                                if is_regular_market:
+                                    if today_profit > max_profit_today: max_profit_today = today_profit
+                                    
+                                    # 🚨 버그 수정: today_profit > 0 조건 완전 삭제 (마이너스 수직 낙하 시에도 즉시 셧다운)
+                                    if settings.get('profit_preserve_on') and not settings.get('is_paused', False):
+                                        p_amt = settings.get('profit_preserve_amount', 0)
+                                        if today_profit <= p_amt:
+                                            # execute_shutdown_sequence는 main.py에 있으므로 여기서 이벤트를 발생시키거나 직접 API를 호출해야 합니다.
+                                            # (통합 편의를 위해 여기에 메시지 발송 로직만 삽입. 실제 매도는 main.py 모니터단에서 처리됨)
+                                            await send_tg_message(f"🚨 [고정 이익 보존 감지]\n수익({int(today_profit):,}원)이 설정된 보존선({p_amt:,}원) 이하로 하락했습니다.\n메인 엔진에서 매도 절차를 집행합니다.")
+                                            settings['profit_preserve_on'] = False
+                                            def _s():
+                                                with open(SETTINGS_FILE, 'w') as f: json.dump(settings, f, indent=4)
+                                            await asyncio.to_thread(_s)
+
+                                    if settings.get('profit_trailing_on') and max_profit_today > 0 and not settings.get('is_paused', False):
+                                        t_pct = settings.get('profit_trailing_pct', 20.0)
+                                        threshold = max_profit_today * (1 - t_pct / 100.0)
+                                        if today_profit <= threshold:
+                                            await send_tg_message(f"🚨 [추적 비율 이익 보존 감지]\n수익({int(today_profit):,}원)이 최고 수익({int(max_profit_today):,}원) 대비 하락 방어선을 이탈했습니다.\n메인 엔진에서 매도 절차를 집행합니다.")
+                                            settings['profit_trailing_on'] = False
+                                            def _s2():
+                                                with open(SETTINGS_FILE, 'w') as f: json.dump(settings, f, indent=4)
+                                            await asyncio.to_thread(_s2)
+                        except Exception as e:
+                            print(f"📡 [System] 계좌 자산 조회 예외 발생: {e}")
 
                 if is_market_open:
                     # 현재 보유 종목 로드
-                    holdings = await kiwoom_api.get_holdings_data(session) or {}
+                    try:
+                        holdings = await kiwoom_api.get_holdings_data(session)
+                    except Exception:
+                        holdings = None
+                        
+                    # 🚨 [추가] 네트워크 단절 감지 및 에러 도배 방지 (Silent Standby)
+                    if holdings is None:
+                        print(f"📡 [System {now.strftime('%H:%M:%S')}] 인터넷/API 연결 단절 감지! 에러 도배 방지를 위해 15초 대기합니다...")
+                        await asyncio.sleep(15)
+                        continue
                     
                     # 글로벌 필터 판별 상태 (True/False)
                     can_buy_market = strategy.global_market_filter.is_safe_to_buy()
@@ -384,7 +485,11 @@ async def main_loop():
                             continue
 
                         # 3) 분봉 캔들 조회
-                        candles = await kiwoom_api.get_candles(session, code, 1)
+                        try:
+                            candles = await kiwoom_api.get_candles(session, code, 1)
+                        except Exception:
+                            candles = None
+                            
                         if not candles:
                             continue
 
@@ -405,21 +510,24 @@ async def main_loop():
                                 
                                 if calc_qty > 0:
                                     # 실제 주문 API 호출
-                                    msg, odno = await kiwoom_api.buy_limit_order(session, code, calc_qty, entry_price)
-                                    
-                                    # 결과 브리핑
-                                    report_msg = (
-                                        f"🚨 [자동 매수 시그널 발생]\n"
-                                        f"• 종목코드: {code}\n"
-                                        f"• 결과: {msg}\n"
-                                        f"• 적용엔진: {meta['strategy']}\n"
-                                        f"• 진단: {meta['meta']['diag_msg']}"
-                                    )
-                                    await send_tg_message(report_msg)
-                                    
-                                    # 매수 후 감시 리스트에서 해당 종목 삭제
-                                    del watch_list[code]
-                                    await save_watch_list(redis_client, watch_list, use_redis)
+                                    try:
+                                        msg, odno = await kiwoom_api.buy_limit_order(session, code, calc_qty, entry_price)
+                                        
+                                        # 결과 브리핑
+                                        report_msg = (
+                                            f"🚨 [자동 매수 시그널 발생]\n"
+                                            f"• 종목코드: {code}\n"
+                                            f"• 결과: {msg}\n"
+                                            f"• 적용엔진: {meta['strategy']}\n"
+                                            f"• 진단: {meta['meta']['diag_msg']}"
+                                        )
+                                        await send_tg_message(report_msg)
+                                        
+                                        # 매수 후 감시 리스트에서 해당 종목 삭제
+                                        del watch_list[code]
+                                        await save_watch_list(redis_client, watch_list, use_redis)
+                                    except Exception as e:
+                                        print(f"📡 [System] 매수 주문 네트워크 에러: {e}")
 
                     # =========================================================
                     # 💰 [매도 및 청산 로직] 잔고 스캔 (추후 고도화 필요 영역)
@@ -431,8 +539,15 @@ async def main_loop():
                 # API 호출 한도(Rate Limit) 방지용 대기
                 await asyncio.sleep(1.0)
 
+            except aiohttp.ClientError:
+                print(f"📡 [System] aiohttp 네트워크 연결 해제 감지. 10초 대기...")
+                await asyncio.sleep(10)
+            except socket.gaierror:
+                print(f"📡 [System] DNS 이름 확인 실패 (인터넷 끊김). 10초 대기...")
+                await asyncio.sleep(10)
             except Exception as e:
-                print(f"❌ [메인 루프 에러]: {e}")
+                # 🚨 기존에 traceback을 출력하던 무거운 에러 로그를 최소화
+                print(f"❌ [메인 루프 에러 (단순 패스)]: {e}")
                 await asyncio.sleep(5) # 에러 발생 시 잠시 휴식
 
 if __name__ == "__main__":
